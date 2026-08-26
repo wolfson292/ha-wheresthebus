@@ -1,0 +1,35 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+norecursedirs = [".git"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "A", "ASYNC", "B", "BLE", "C4", "D", "E", "F", "FLY", "G", "I", "ICN",
+  "INP", "ISC", "LOG", "N", "PERF", "PGH", "PIE", "PL", "PT", "PTH", "RET",
+  "RSE", "RUF", "S", "SIM", "SLF", "SLOT", "T20", "TID", "TRY", "UP", "W",
+]
+ignore = [
+  "D203",
+  "D213",
+  "E501",
+  "EM101",
+  "EM102",
+  "ISC001",
+  "PLR0913",
+  "TRY003",
+  "TRY400",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D100", "D103", "PLR2004", "S101", "SLF001"]
+# A standalone CLI: printing is the point, and it is not part of the package.
+"scripts/*" = ["INP001", "T20"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
