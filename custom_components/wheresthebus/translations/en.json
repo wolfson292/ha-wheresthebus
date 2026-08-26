@@ -1,0 +1,82 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to WheresTheBus",
+        "description": "Sign in with the email address and password you use for the WheresTheBus parent app.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate WheresTheBus",
+        "description": "The password for {email} is no longer accepted. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid email or password",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This WheresTheBus account is already set up.",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WheresTheBus options",
+        "description": "How often to poll each part of the WheresTheBus API.",
+        "data": {
+          "bus_scan_interval": "Bus location update interval",
+          "student_scan_interval": "Roster and ID scan update interval"
+        },
+        "data_description": {
+          "bus_scan_interval": "How often the live bus position is refreshed. The app itself refreshes every 15 seconds.",
+          "student_scan_interval": "How often stop details and ID scan history are refreshed."
+        }
+      }
+    }
+  },
+  "entity": {
+    "device_tracker": {
+      "bus": {
+        "name": "Bus"
+      }
+    },
+    "sensor": {
+      "distance_to_stop": {
+        "name": "Distance to stop"
+      },
+      "bus_status": {
+        "name": "Bus status"
+      },
+      "eta": {
+        "name": "ETA"
+      },
+      "last_scan": {
+        "name": "Last scan"
+      },
+      "last_pickup": {
+        "name": "Last pickup"
+      },
+      "last_dropoff": {
+        "name": "Last drop-off"
+      },
+      "am_stop_time": {
+        "name": "Morning stop time"
+      },
+      "pm_stop_time": {
+        "name": "Afternoon stop time"
+      },
+      "bus_number": {
+        "name": "Bus number"
+      }
+    }
+  }
+}
