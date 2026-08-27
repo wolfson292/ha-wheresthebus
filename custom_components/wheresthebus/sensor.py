@@ -14,18 +14,20 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfLength
+from homeassistant.const import EntityCategory, UnitOfLength, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import WheresTheBusConfigEntry
 from .const import (
     ATTR_BUS_NUMBER,
+    ATTR_RAW_STATUS,
     ATTR_SCAN_LOCATION,
     ATTR_SCAN_METHOD,
     ATTR_SCHOOL_NAME,
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
+    BUS_STATUS_OPTIONS,
     SCAN_DROPOFF,
     SCAN_PICKUP,
 )
@@ -34,6 +36,7 @@ from .coordinator import (
     Student,
     WheresTheBusBusCoordinator,
     WheresTheBusStudentCoordinator,
+    parse_bus_status,
 )
 from .entity import WheresTheBusEntity
 
@@ -44,6 +47,7 @@ class WheresTheBusBusSensorDescription(SensorEntityDescription):
 
     value_fn: Callable[[dict[str, Any]], Any]
     unit_fn: Callable[[bool], str | None] | None = None
+    attrs_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,8 +79,23 @@ BUS_SENSORS: tuple[WheresTheBusBusSensorDescription, ...] = (
     WheresTheBusBusSensorDescription(
         key="bus_status",
         translation_key="bus_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=BUS_STATUS_OPTIONS,
         icon="mdi:bus-alert",
-        value_fn=lambda info: _blank_to_none(info.get("stsMsg")),
+        value_fn=lambda info: parse_bus_status(info.get("stsMsg"))[0],
+        # The unabridged string is kept so nothing is lost when the API uses
+        # wording the parser does not recognise.
+        attrs_fn=lambda info: {ATTR_RAW_STATUS: _blank_to_none(info.get("stsMsg"))},
+    ),
+    WheresTheBusBusSensorDescription(
+        key="gps_age",
+        translation_key="gps_age",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:crosshairs-gps",
+        value_fn=lambda info: parse_bus_status(info.get("stsMsg"))[1],
     ),
     WheresTheBusBusSensorDescription(
         key="eta",
@@ -191,6 +210,14 @@ class WheresTheBusBusSensor(WheresTheBusEntity, SensorEntity):
         if self.entity_description.unit_fn is None:
             return self.entity_description.native_unit_of_measurement
         return self.entity_description.unit_fn(self.coordinator.distance_in_km)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return any extra context this sensor publishes."""
+        if self.entity_description.attrs_fn is None:
+            return None
+        info = (self.coordinator.data or {}).get(self._child_id) or {}
+        return self.entity_description.attrs_fn(info)
 
 
 class WheresTheBusStudentSensor(WheresTheBusEntity, SensorEntity):

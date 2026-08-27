@@ -60,6 +60,9 @@ async def async_setup_entry(
         api,
         entry.options.get(CONF_STUDENT_SCAN_INTERVAL, DEFAULT_STUDENT_SCAN_INTERVAL),
     )
+    # Accumulated scans are restored before the first poll so the scan sensors
+    # come back with yesterday's values instead of blanking until the next scan.
+    await students.async_load_history()
     await students.async_config_entry_first_refresh()
 
     buses = WheresTheBusBusCoordinator(
