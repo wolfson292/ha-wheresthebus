@@ -12,11 +12,22 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
-from .const import DOMAIN, SCAN_DROPOFF, SCAN_PICKUP
+from .const import (
+    DOMAIN,
+    SCAN_DROPOFF,
+    SCAN_HISTORY_LIMIT,
+    SCAN_PICKUP,
+    STATUS_CURRENT,
+    STATUS_INACTIVE,
+    STATUS_STALE,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +35,35 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 # Local hour that separates the morning run from the afternoon run.
 _NOON = 12
+
+
+# "3 min. ago", "12 mins ago" — the number is the age of the GPS fix.
+_AGE_PATTERN = re.compile(r"(\d+)\s*min")
+
+
+def parse_bus_status(sts_msg: str | None) -> tuple[str | None, int | None]:
+    """Split the API's status string into a bounded state and a GPS age.
+
+    ``stsMsg`` is written for humans and changes every minute while a bus is
+    running ("current" -> "1 min. ago" -> ... -> "inactive"), which makes it
+    useless as an entity state.  It is split into a status with three possible
+    values and the age of the GPS fix in minutes.
+
+    Returns ``(None, None)`` for anything unrecognised so a vocabulary the API
+    adds later shows as unknown rather than breaking the enum sensor; the raw
+    string is kept as an attribute either way.
+    """
+    if not sts_msg or not (text := sts_msg.strip()):
+        return None, None
+
+    lowered = text.lower()
+    if lowered.startswith(STATUS_CURRENT):
+        return STATUS_CURRENT, 0
+    if lowered.startswith(STATUS_INACTIVE):
+        return STATUS_INACTIVE, None
+    if match := _AGE_PATTERN.search(lowered):
+        return STATUS_STALE, int(match.group(1))
+    return None, None
 
 
 def _normalise(value: str | None) -> str:
@@ -127,6 +167,69 @@ class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
             update_interval=timedelta(seconds=interval),
         )
         self.api = api
+        self._store: Store[dict[str, list[dict[str, Any]]]] = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY}.{config_entry.entry_id}"
+        )
+        self._history: dict[int, list[ScanEvent]] = {}
+
+    async def async_load_history(self) -> None:
+        """Restore accumulated scans saved by a previous run."""
+        stored = await self._store.async_load() or {}
+        for raw_child_id, scans in stored.items():
+            try:
+                child_id = int(raw_child_id)
+            except (TypeError, ValueError):
+                continue
+            events = []
+            for scan in scans:
+                if (timestamp := dt_util.parse_datetime(scan.get("t", ""))) is None:
+                    continue
+                events.append(
+                    ScanEvent(
+                        timestamp=timestamp,
+                        location=scan.get("l") or "",
+                        method=scan.get("m") or "",
+                        bus=scan.get("b") or "",
+                    )
+                )
+            if events:
+                self._history[child_id] = events
+        _LOGGER.debug("Restored scans for %d rider(s)", len(self._history))
+
+    async def _async_save_history(self) -> None:
+        """Persist accumulated scans."""
+        await self._store.async_save(
+            {
+                str(child_id): [
+                    {
+                        "t": scan.timestamp.isoformat(),
+                        "l": scan.location,
+                        "m": scan.method,
+                        "b": scan.bus,
+                    }
+                    for scan in scans
+                ]
+                for child_id, scans in self._history.items()
+            }
+        )
+
+    def _merge_scans(self, child_id: int, fresh: list[ScanEvent]) -> list[ScanEvent]:
+        """Fold today's scans into the rider's accumulated history.
+
+        ``getStudentScan`` only ever returns the current day, so replacing the
+        list outright would blank every scan sensor at midnight and again on
+        each restart.  Scans are merged by timestamp and trimmed to a rolling
+        window instead, which keeps "last pickup" meaningful overnight and
+        keeps the afternoon pickup visible through the following morning.
+        """
+        known = {scan.timestamp: scan for scan in self._history.get(child_id, [])}
+        for scan in fresh:
+            known[scan.timestamp] = scan
+
+        merged = sorted(known.values(), key=lambda item: item.timestamp)
+        merged = merged[-SCAN_HISTORY_LIMIT:]
+        self._history[child_id] = merged
+        return merged
 
     async def _async_update_data(self) -> dict[int, Student]:
         """Fetch user info, roster and scans, and merge them per student."""
@@ -143,6 +246,16 @@ class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
         # that id is what ``getRiderInfoEx`` needs, so it drives the roster.
         students = _pair_riders(user_info.get("childBuses") or [], riders)
         _attach_scans(students, scan_payload)
+
+        before = {child_id: len(scans) for child_id, scans in self._history.items()}
+        for child_id, student in students.items():
+            merged = self._merge_scans(child_id, student.scans)
+            student.scans = classify_scans(merged, student.school_name)
+        if before != {
+            child_id: len(scans) for child_id, scans in self._history.items()
+        }:
+            await self._async_save_history()
+
         return students
 
 
@@ -237,7 +350,7 @@ def _build_student(
 
 
 def _attach_scans(students: dict[int, Student], payload: dict[str, Any]) -> None:
-    """Match ``getStudentScan`` results onto the roster by rider name.
+    """Attach ``getStudentScan`` results to the roster, matching by rider name.
 
     The scan endpoint keys students by name rather than by child id, so names
     are compared with punctuation and case removed.  Middle names in the roster
@@ -271,7 +384,9 @@ def _attach_scans(students: dict[int, Student], payload: dict[str, Any]) -> None
             for scan in detail.get("studentScans") or []
             if (scan_time := scan.get("scanTime"))
         ]
-        student.scans = classify_scans(events, student.school_name)
+        # Left unclassified: the coordinator merges these into the rider's
+        # accumulated history first, then classifies the whole window at once.
+        student.scans = events
 
 
 def _match_by_name_parts(

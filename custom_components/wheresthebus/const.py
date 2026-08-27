@@ -38,6 +38,7 @@ MAX_STUDENT_SCAN_INTERVAL: Final = 3600
 REQUEST_TIMEOUT: Final = timedelta(seconds=30)
 
 ATTR_BUS_NUMBER: Final = "bus_number"
+ATTR_RAW_STATUS: Final = "raw_status"
 ATTR_ROUTE_NUMBER: Final = "route_number"
 ATTR_SCAN_LOCATION: Final = "scan_location"
 ATTR_SCAN_METHOD: Final = "scan_method"
@@ -50,3 +51,20 @@ ATTR_STUDENT_ID: Final = "student_id"
 
 SCAN_PICKUP: Final = "pickup"
 SCAN_DROPOFF: Final = "dropoff"
+
+# ``stsMsg`` is a human-readable GPS-freshness string ("current", "3 min.
+# ago", "inactive").  It is collapsed to these three states so the sensor has
+# bounded cardinality instead of changing every single minute.
+STATUS_CURRENT: Final = "current"
+STATUS_STALE: Final = "stale"
+STATUS_INACTIVE: Final = "inactive"
+BUS_STATUS_OPTIONS: Final = [STATUS_CURRENT, STATUS_STALE, STATUS_INACTIVE]
+
+# The scan endpoint only ever returns the current day, so scans are
+# accumulated locally and persisted to survive both midnight and restarts.
+STORAGE_VERSION: Final = 1
+STORAGE_KEY: Final = "wheresthebus_scans"
+# Bounded by count rather than by age: it keeps storage small without the
+# retained history depending on how long Home Assistant has been running, and
+# 50 scans is comfortably more than two weeks of school days.
+SCAN_HISTORY_LIMIT: Final = 50

@@ -54,7 +54,15 @@
         "name": "Distance to stop"
       },
       "bus_status": {
-        "name": "Bus status"
+        "name": "Bus status",
+        "state": {
+          "current": "Current",
+          "stale": "Stale",
+          "inactive": "Inactive"
+        }
+      },
+      "gps_age": {
+        "name": "GPS age"
       },
       "eta": {
         "name": "ETA"

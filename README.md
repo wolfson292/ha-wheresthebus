@@ -15,7 +15,8 @@ One device per rider on your account, with these entities:
 | --- | --- |
 | `device_tracker.<rider>_bus` | Live GPS position of the bus. Drops onto a map card, and works with zone triggers. |
 | `sensor.<rider>_distance_to_stop` | Distance from the bus to the rider's stop. |
-| `sensor.<rider>_bus_status` | The status message the app shows, e.g. `current`. |
+| `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
+| `sensor.<rider>_gps_age` | Age of the last GPS fix in minutes (diagnostic). |
 | `sensor.<rider>_eta` | The app's ETA message, when the district publishes one. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
 | `sensor.<rider>_last_pickup` | Timestamp the rider was last picked up. |
@@ -27,6 +28,25 @@ One device per rider on your account, with these entities:
 The scan sensors carry `scan_location`, `scan_method`, `bus_number`,
 `stop_address` and `school_name` attributes. The tracker carries the stop
 coordinates and the status colour the app uses.
+
+### Bus status and GPS age
+
+The API reports status as a sentence written for a human — `current`, then
+`1 min. ago`, `2 min. ago`, and so on up to `inactive` — which changes every
+single minute a bus is moving. That is unusable as an entity state and fills
+the recorder with unbounded strings, so it is split in two: `bus_status` holds
+one of three values, and `gps_age` holds the number of minutes. The original
+string is still available as the `raw_status` attribute on `bus_status`, and
+wording the parser does not recognise leaves `bus_status` unknown rather than
+discarding it.
+
+### Scan history is remembered
+
+`getStudentScan` only ever returns the current day, so the scan sensors would
+otherwise blank at midnight and again on every restart — a parent checking
+before school would see nothing instead of yesterday afternoon's pickup.
+Scans are merged into a rolling per-rider history (the most recent 50), stored
+under `.storage`, and reloaded at startup.
 
 ### How pickup and drop-off are worked out
 
@@ -118,6 +138,12 @@ automation:
   account setting, and Home Assistant converts it to your own unit system.
 - Districts that use SAML single sign-on are **not** supported — the integration
   signs in with an email and password only.
+- Not every district scans on alighting. Where they don't, "last drop-off" means
+  *arrived at school*, not *arrived home* — check the `scan_location` attribute
+  rather than assuming.
+- Buses often pass a stop on an earlier route, so a bare "distance below X"
+  automation can fire on the wrong run. Trigger on `sensor.<rider>_last_pickup`
+  changing, or gate the proximity trigger on the scheduled stop time.
 
 ## Development
 

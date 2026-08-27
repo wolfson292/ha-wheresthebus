@@ -18,6 +18,8 @@ from custom_components.wheresthebus.api import (
 )
 from custom_components.wheresthebus.const import DOMAIN
 
+from .fixtures import RIDER_INFO, STUDENT_SCANS
+
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> MockConfigEntry:
     """Add and set up the config entry."""
@@ -155,3 +157,144 @@ async def test_unload_entry(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
+
+
+async def test_gps_age_sensor(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """The GPS age is exposed as minutes rather than as prose."""
+    await setup_entry(hass, mock_config_entry)
+
+    status = hass.states.get("sensor.robin_alex_rivera_bus_status")
+    assert status is not None
+    assert status.state == "current"
+    assert status.attributes["raw_status"] == "current"
+    assert status.attributes["options"] == ["current", "stale", "inactive"]
+
+    age = hass.states.get("sensor.robin_alex_rivera_gps_age")
+    assert age is not None
+    assert age.state == "0"
+    assert age.attributes["unit_of_measurement"] == "min"
+
+
+async def test_stale_gps_does_not_churn_the_status(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Minute-by-minute GPS ageing moves the age, not the status."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    seen_status: set[str] = set()
+    for minute in (1, 2, 7, 14):
+        mock_api.async_get_rider_info.return_value = {
+            **RIDER_INFO,
+            "stsMsg": f"{minute} min. ago",
+        }
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+        seen_status.add(hass.states.get("sensor.robin_alex_rivera_bus_status").state)
+        assert hass.states.get("sensor.robin_alex_rivera_gps_age").state == str(minute)
+
+    # Four different API strings collapsed to a single sensor state.
+    assert seen_status == {"stale"}
+
+
+async def test_unrecognised_status_keeps_the_raw_string(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Wording the parser does not know shows unknown but is not discarded."""
+    await setup_entry(hass, mock_config_entry)
+
+    mock_api.async_get_rider_info.return_value = {
+        **RIDER_INFO,
+        "stsMsg": "awaiting first fix",
+    }
+    await mock_config_entry.runtime_data.buses.async_refresh()
+    await hass.async_block_till_done()
+
+    status = hass.states.get("sensor.robin_alex_rivera_bus_status")
+    assert status.state == "unknown"
+    assert status.attributes["raw_status"] == "awaiting first fix"
+
+
+async def test_scans_survive_the_midnight_reset(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """An empty scan feed must not blank yesterday's pickup and drop-off."""
+    await setup_entry(hass, mock_config_entry)
+
+    pickup = hass.states.get("sensor.robin_alex_rivera_last_pickup").state
+    dropoff = hass.states.get("sensor.robin_alex_rivera_last_drop_off").state
+    assert pickup == "2026-08-26T20:19:59+00:00"
+    assert dropoff == "2026-08-26T13:30:03+00:00"
+
+    # After midnight the API reports the new day, which has no scans yet.
+    mock_api.async_get_student_scans.return_value = {
+        "studentDetails": [{"studentName": "Robin Rivera", "studentScans": []}],
+        "studentInfo": STUDENT_SCANS["studentInfo"],
+    }
+    await mock_config_entry.runtime_data.students.async_refresh()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.robin_alex_rivera_last_pickup").state == pickup
+    assert hass.states.get("sensor.robin_alex_rivera_last_drop_off").state == dropoff
+
+
+async def test_new_scans_merge_with_retained_history(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Today's pickup lands without losing yesterday's drop-off."""
+    await setup_entry(hass, mock_config_entry)
+
+    # A new day: one morning pickup at the neighbourhood stop, nothing else.
+    mock_api.async_get_student_scans.return_value = {
+        "studentDetails": [
+            {
+                "studentName": "Robin Rivera",
+                "studentScans": [
+                    {
+                        "scanTime": 1787832325,
+                        "scanLocation": "Maple Rd, Springfield",
+                        "scanMethod": "Keypad",
+                        "bus": "1234",
+                    }
+                ],
+            }
+        ],
+        "studentInfo": STUDENT_SCANS["studentInfo"],
+    }
+    await mock_config_entry.runtime_data.students.async_refresh()
+    await hass.async_block_till_done()
+
+    # The new scan becomes the pickup...
+    assert (
+        hass.states.get("sensor.robin_alex_rivera_last_pickup").state
+        == "2026-08-27T12:05:25+00:00"
+    )
+    # ...while the previous day's drop-off is still there.
+    assert (
+        hass.states.get("sensor.robin_alex_rivera_last_drop_off").state
+        == "2026-08-26T13:30:03+00:00"
+    )
+
+
+async def test_scan_history_is_restored_after_a_restart(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A restart before the first scan of the day keeps the previous values."""
+    await setup_entry(hass, mock_config_entry)
+    pickup = hass.states.get("sensor.robin_alex_rivera_last_pickup").state
+
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # Come back up on a fresh day whose scan feed is still empty.
+    mock_api.async_get_student_scans.return_value = {
+        "studentDetails": [{"studentName": "Robin Rivera", "studentScans": []}],
+        "studentInfo": STUDENT_SCANS["studentInfo"],
+    }
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.robin_alex_rivera_last_pickup").state == pickup

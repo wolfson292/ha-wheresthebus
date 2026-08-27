@@ -12,6 +12,7 @@ from custom_components.wheresthebus.coordinator import (
     _attach_scans,
     _pair_riders,
     classify_scans,
+    parse_bus_status,
 )
 
 from .fixtures import ALL_RIDERS, STUDENT_SCANS, USER_INFO
@@ -146,6 +147,12 @@ def test_attach_scans_matches_a_shortened_name() -> None:
     assert len(student.scans) == 3
     assert student.last_scan is not None
     assert student.last_scan.timestamp == dt_util.utc_from_timestamp(1787775599)
+    # _attach_scans leaves events unclassified; the coordinator classifies the
+    # whole accumulated window after merging.
+    assert all(scan.kind is None for scan in student.scans)
+
+    student.scans = classify_scans(student.scans, student.school_name)
+
     assert student.last_scan_of(SCAN_PICKUP).timestamp == dt_util.utc_from_timestamp(
         1787775599
     )
@@ -167,3 +174,33 @@ def test_attach_scans_ignores_unknown_students() -> None:
     _attach_scans(students, payload)
 
     assert students[12345678].scans == []
+
+
+@pytest.mark.parametrize(
+    ("sts_msg", "expected"),
+    [
+        ("current", ("current", 0)),
+        ("Current", ("current", 0)),
+        ("inactive", ("inactive", None)),
+        ("1 min. ago", ("stale", 1)),
+        ("14 min. ago", ("stale", 14)),
+        ("3 mins ago", ("stale", 3)),
+        ("", (None, None)),
+        (None, (None, None)),
+        ("something new", (None, None)),
+    ],
+)
+def test_parse_bus_status(
+    sts_msg: str | None, expected: tuple[str | None, int | None]
+) -> None:
+    """The API's human-readable status splits into a state and a GPS age."""
+    assert parse_bus_status(sts_msg) == expected
+
+
+def test_parse_bus_status_collapses_the_minute_by_minute_churn() -> None:
+    """Every "N min. ago" maps to one state, so the sensor stops churning."""
+    messages = ["current", *[f"{n} min. ago" for n in range(1, 15)], "inactive"]
+
+    states = {parse_bus_status(message)[0] for message in messages}
+
+    assert states == {"current", "stale", "inactive"}
