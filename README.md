@@ -145,6 +145,25 @@ automation:
   automation can fire on the wrong run. Trigger on `sensor.<rider>_last_pickup`
   changing, or gate the proximity trigger on the scheduled stop time.
 
+## Brand images
+
+Home Assistant does **not** load brand images from this repository or from the
+`custom_components` folder — the frontend fetches them from
+`brands.home-assistant.io`. Getting the icon to show in the integrations list
+therefore needs a pull request to
+[home-assistant/brands](https://github.com/home-assistant/brands) adding
+`custom_integrations/wheresthebus/icon.png` (256x256), `icon@2x.png` (512x512)
+and their `logo` counterparts. The files in `brand/` are ready to submit.
+
+The artwork is original. WheresTheBus publishes only a trademarked wordmark,
+which is the wrong shape for a square icon and is not this project's to
+redistribute under the GPL, so `scripts/make_brand_assets.py` draws a plain
+school-bus badge instead. Regenerate with:
+
+```bash
+python3 scripts/make_brand_assets.py
+```
+
 ## Development
 
 ```bash
