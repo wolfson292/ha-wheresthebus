@@ -21,9 +21,13 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import WheresTheBusConfigEntry
 from .const import (
     ATTR_BUS_NUMBER,
+    ATTR_PREDICTION_SOURCE,
     ATTR_RAW_STATUS,
+    ATTR_RUN,
+    ATTR_SAMPLES,
     ATTR_SCAN_LOCATION,
     ATTR_SCAN_METHOD,
+    ATTR_SCHEDULED,
     ATTR_SCHOOL_NAME,
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
@@ -169,6 +173,9 @@ async def async_setup_entry(
     entities: list[SensorEntity] = []
 
     for child_id in data.students.data:
+        entities.append(
+            WheresTheBusNextArrivalSensor(data.buses, data.students, child_id)
+        )
         entities.extend(
             WheresTheBusBusSensor(data.buses, data.students, child_id, description)
             for description in BUS_SENSORS
@@ -218,6 +225,49 @@ class WheresTheBusBusSensor(WheresTheBusEntity, SensorEntity):
             return None
         info = (self.coordinator.data or {}).get(self._child_id) or {}
         return self.entity_description.attrs_fn(info)
+
+
+class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
+    """When the bus is next expected at this rider's stop.
+
+    A timestamp rather than a minutes-remaining number: a countdown would
+    rewrite itself on every poll, and Home Assistant renders a timestamp as
+    relative time anyway.  It also makes the alerting automations plain time
+    triggers with a negative offset, with no templates involved.
+    """
+
+    coordinator: WheresTheBusBusCoordinator
+    _attr_translation_key = "next_arrival"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:bus-clock"
+
+    def __init__(
+        self,
+        coordinator: WheresTheBusBusCoordinator,
+        students: WheresTheBusStudentCoordinator,
+        child_id: int,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(coordinator, students, child_id, "next_arrival")
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the predicted arrival."""
+        prediction = self.coordinator.predict_next_arrival(self._child_id)
+        return prediction.arrival if prediction else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return which run this is, and how well informed the guess is."""
+        prediction = self.coordinator.predict_next_arrival(self._child_id)
+        if prediction is None:
+            return None
+        return {
+            ATTR_RUN: prediction.run,
+            ATTR_PREDICTION_SOURCE: prediction.source,
+            ATTR_SAMPLES: prediction.samples,
+            ATTR_SCHEDULED: prediction.scheduled.strftime("%H:%M"),
+        }
 
 
 class WheresTheBusStudentSensor(WheresTheBusEntity, SensorEntity):

@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
+from freezegun import freeze_time
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -19,6 +22,11 @@ from custom_components.wheresthebus.api import (
 from custom_components.wheresthebus.const import DOMAIN
 
 from .fixtures import RIDER_INFO, STUDENT_SCANS
+
+
+def freeze_time_local(*parts: int):
+    """Freeze the clock at a local wall-clock time in Home Assistant's zone."""
+    return freeze_time(datetime(*parts, tzinfo=dt_util.get_default_time_zone()))
 
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> MockConfigEntry:
@@ -298,3 +306,106 @@ async def test_scan_history_is_restored_after_a_restart(
     await hass.async_block_till_done()
 
     assert hass.states.get("sensor.robin_alex_rivera_last_pickup").state == pickup
+
+
+async def test_next_arrival_falls_back_to_the_schedule(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """With no observed arrivals yet, the prediction is the scheduled time."""
+    await setup_entry(hass, mock_config_entry)
+
+    arrival = hass.states.get("sensor.robin_alex_rivera_next_arrival")
+    assert arrival is not None
+    assert arrival.attributes["prediction_source"] == "scheduled"
+    assert arrival.attributes["samples"] == 0
+    assert arrival.attributes["run"] in ("am", "pm")
+
+    # Whichever run is next, the predicted clock time is its scheduled one.
+    predicted = dt_util.as_local(dt_util.parse_datetime(arrival.state))
+    assert predicted.strftime("%H:%M") == arrival.attributes["scheduled"]
+    assert predicted > dt_util.as_local(dt_util.utcnow())
+
+
+async def test_arrival_is_learned_from_a_close_pass(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A pass that reaches the stop inside the window becomes a sample."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # 08:02 local, inside the 07:26-08:26 pickup window, right at the stop.
+    with freeze_time_local(2026, 8, 31, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    # Once the window has closed the observation is promoted to an arrival.
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    # Ask before the next morning window, so the AM run is the next arrival.
+    with freeze_time_local(2026, 9, 1, 6, 0):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.run == "am"
+    assert prediction.source == "learned"
+    assert prediction.samples == 1
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "08:02"
+
+
+async def test_a_distant_pass_is_not_learned_as_an_arrival(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A run where the bus stayed half a mile out never reached the stop."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    with freeze_time_local(2026, 8, 31, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.5}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 9, 1, 6, 0):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.run == "am"
+    assert prediction.source == "scheduled"
+    assert prediction.samples == 0
+    # Falls back to the timetable, not to the pass that never reached the stop.
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:56"
+
+
+async def test_the_early_decoy_pass_is_not_learned(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Touching the stop at 06:13 on another route must not become a sample."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    with freeze_time_local(2026, 8, 31, 6, 13):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 9, 1, 6, 0):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.run == "am"
+    assert prediction.source == "scheduled"
+    assert prediction.samples == 0
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:56"

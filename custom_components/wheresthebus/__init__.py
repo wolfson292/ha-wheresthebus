@@ -72,6 +72,7 @@ async def async_setup_entry(
         students,
         entry.options.get(CONF_BUS_SCAN_INTERVAL, DEFAULT_BUS_SCAN_INTERVAL),
     )
+    await buses.async_load_arrivals()
     await buses.async_config_entry_first_refresh()
 
     entry.runtime_data = WheresTheBusData(api=api, students=students, buses=buses)

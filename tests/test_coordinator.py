@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from homeassistant.util import dt as dt_util
 
@@ -13,6 +15,8 @@ from custom_components.wheresthebus.coordinator import (
     _pair_riders,
     classify_scans,
     parse_bus_status,
+    parse_stop_time,
+    run_window,
 )
 
 from .fixtures import ALL_RIDERS, STUDENT_SCANS, USER_INFO
@@ -204,3 +208,50 @@ def test_parse_bus_status_collapses_the_minute_by_minute_churn() -> None:
     states = {parse_bus_status(message)[0] for message in messages}
 
     assert states == {"current", "stale", "inactive"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("7:56 A.M.", (7, 56)),
+        ("5:48 P.M.", (17, 48)),
+        ("12:05 A.M.", (0, 5)),
+        ("12:30 P.M.", (12, 30)),
+        ("7:56 AM", (7, 56)),
+        ("11:59 p.m.", (23, 59)),
+    ],
+)
+def test_parse_stop_time(value: str, expected: tuple[int, int]) -> None:
+    """Scheduled stop times parse regardless of meridiem punctuation."""
+    parsed = parse_stop_time(value)
+
+    assert parsed is not None
+    assert (parsed.hour, parsed.minute) == expected
+
+
+@pytest.mark.parametrize("value", ["", None, "sometime", "7:75 A.M."])
+def test_parse_stop_time_rejects_junk(value: str | None) -> None:
+    """Unparseable stop times yield None rather than a wrong time."""
+    assert parse_stop_time(value) is None
+
+
+def test_run_window_brackets_the_scheduled_time() -> None:
+    """The window is 30 minutes either side of the scheduled stop."""
+    reference = dt_util.as_utc(datetime(2026, 8, 31, 12, 0, tzinfo=UTC))
+
+    start, end = run_window(parse_stop_time("7:56 A.M."), reference)
+
+    assert (start.hour, start.minute) == (7, 26)
+    assert (end.hour, end.minute) == (8, 26)
+
+
+def test_run_window_excludes_the_early_decoy_pass() -> None:
+    """The 06:13 pass on an unrelated route falls outside the pickup window."""
+    reference = dt_util.as_utc(datetime(2026, 8, 31, 12, 0, tzinfo=UTC))
+    start, end = run_window(parse_stop_time("7:56 A.M."), reference)
+
+    decoy = dt_util.as_local(reference).replace(hour=6, minute=13)
+    real = dt_util.as_local(reference).replace(hour=8, minute=2)
+
+    assert not start <= decoy <= end
+    assert start <= real <= end

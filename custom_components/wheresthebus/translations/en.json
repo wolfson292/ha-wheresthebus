@@ -50,6 +50,9 @@
       }
     },
     "sensor": {
+      "next_arrival": {
+        "name": "Next arrival"
+      },
       "distance_to_stop": {
         "name": "Distance to stop"
       },

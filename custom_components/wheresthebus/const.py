@@ -62,9 +62,32 @@ BUS_STATUS_OPTIONS: Final = [STATUS_CURRENT, STATUS_STALE, STATUS_INACTIVE]
 
 # The scan endpoint only ever returns the current day, so scans are
 # accumulated locally and persisted to survive both midnight and restarts.
-STORAGE_VERSION: Final = 1
+STORAGE_VERSION: Final = 2
 STORAGE_KEY: Final = "wheresthebus_scans"
+ARRIVAL_STORAGE_KEY: Final = "wheresthebus_arrivals"
 # Bounded by count rather than by age: it keeps storage small without the
 # retained history depending on how long Home Assistant has been running, and
 # 50 scans is comfortably more than two weeks of school days.
 SCAN_HISTORY_LIMIT: Final = 50
+
+# The bus visits the rider's stop twice a day, and passes it on unrelated
+# routes at other times — observed touching the stop at 06:13 for an 07:56
+# pickup.  Arrivals are only recognised within this many minutes either side
+# of the scheduled stop time, which is what keeps the decoy passes out.
+RUN_AM: Final = "am"
+RUN_PM: Final = "pm"
+RUN_WINDOW_MINUTES: Final = 30
+
+# How close the bus must come for a pass to count as "it stopped here".  A run
+# where nobody boards can stay half a mile out, so a loose threshold would
+# learn arrivals that never happened.
+ARRIVAL_THRESHOLD_MILES: Final = 0.3
+ARRIVAL_THRESHOLD_KM: Final = 0.5
+ARRIVAL_HISTORY_LIMIT: Final = 20
+
+ATTR_RUN: Final = "run"
+ATTR_PREDICTION_SOURCE: Final = "prediction_source"
+ATTR_SAMPLES: Final = "samples"
+ATTR_SCHEDULED: Final = "scheduled"
+SOURCE_LEARNED: Final = "learned"
+SOURCE_SCHEDULED: Final = "scheduled"

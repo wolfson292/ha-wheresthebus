@@ -17,6 +17,7 @@ One device per rider on your account, with these entities:
 | `sensor.<rider>_distance_to_stop` | Distance from the bus to the rider's stop. |
 | `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
 | `sensor.<rider>_gps_age` | Age of the last GPS fix in minutes (diagnostic). |
+| `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop. |
 | `sensor.<rider>_eta` | The app's ETA message, when the district publishes one. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
 | `sensor.<rider>_last_pickup` | Timestamp the rider was last picked up. |
@@ -39,6 +40,26 @@ one of three values, and `gps_age` holds the number of minutes. The original
 string is still available as the `raw_status` attribute on `bus_status`, and
 wording the parser does not recognise leaves `bus_status` unknown rather than
 discarding it.
+
+### Predicted arrival
+
+`next_arrival` is a **timestamp**, not a minutes-remaining number: a countdown
+would rewrite itself on every poll, and Home Assistant renders a timestamp as
+relative time anyway. It also means alerting automations are plain `time`
+triggers with a negative offset — no templates.
+
+The prediction is the median of previously observed arrivals for that run,
+falling back to the district's scheduled stop time until enough have been
+seen. The `prediction_source` and `samples` attributes say which is in use.
+
+Two things make the observations trustworthy:
+
+- **Only arrivals within 30 minutes of the scheduled stop time count.** Buses
+  routinely pass a stop on unrelated earlier routes — one was observed at the
+  stop at 06:13 for an 07:56 pickup — and learning from those would be worse
+  than useless.
+- **The bus must actually reach the stop** (within 0.3 mi). On a run where
+  nobody boards, the route can stay half a mile out; that is not an arrival.
 
 ### Scan history is remembered
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,10 +18,19 @@ from homeassistant.util import dt as dt_util
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .const import (
+    ARRIVAL_HISTORY_LIMIT,
+    ARRIVAL_STORAGE_KEY,
+    ARRIVAL_THRESHOLD_KM,
+    ARRIVAL_THRESHOLD_MILES,
     DOMAIN,
+    RUN_AM,
+    RUN_PM,
+    RUN_WINDOW_MINUTES,
     SCAN_DROPOFF,
     SCAN_HISTORY_LIMIT,
     SCAN_PICKUP,
+    SOURCE_LEARNED,
+    SOURCE_SCHEDULED,
     STATUS_CURRENT,
     STATUS_INACTIVE,
     STATUS_STALE,
@@ -35,6 +44,62 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 # Local hour that separates the morning run from the afternoon run.
 _NOON = 12
+_MAX_MINUTE = 59
+
+# "7:56 A.M." / "5:48 PM" — the punctuation varies between districts.
+_STOP_TIME_PATTERN = re.compile(
+    r"(?P<hour>\d{1,2})\s*:\s*(?P<minute>\d{2})\s*(?P<meridiem>[ap])", re.IGNORECASE
+)
+
+
+def parse_stop_time(value: str | None) -> time | None:
+    """Parse a scheduled stop time such as ``7:56 A.M.`` into a local time."""
+    if not value or not (match := _STOP_TIME_PATTERN.search(value)):
+        return None
+
+    hour = int(match.group("hour")) % 12
+    if match.group("meridiem").lower() == "p":
+        hour += 12
+    minute = int(match.group("minute"))
+    if minute > _MAX_MINUTE:
+        return None
+    return time(hour=hour, minute=minute)
+
+
+@dataclass(slots=True)
+class ArrivalPrediction:
+    """A predicted arrival of the bus at a rider's stop."""
+
+    run: str
+    arrival: datetime
+    source: str
+    samples: int
+    scheduled: time
+
+
+@dataclass(slots=True)
+class RunArrival:
+    """One observed arrival of the bus at a rider's stop."""
+
+    run: str
+    arrival: datetime
+    closest: float
+
+
+def run_window(
+    scheduled: time | None, reference: datetime
+) -> tuple[datetime, datetime] | None:
+    """Return the local window in which a run's arrival is believed genuine."""
+    if scheduled is None:
+        return None
+    centre = dt_util.as_local(reference).replace(
+        hour=scheduled.hour,
+        minute=scheduled.minute,
+        second=0,
+        microsecond=0,
+    )
+    span = timedelta(minutes=RUN_WINDOW_MINUTES)
+    return centre - span, centre + span
 
 
 # "3 min. ago", "12 mins ago" — the number is the age of the GPS fix.
@@ -96,6 +161,8 @@ class Student:
     school_name: str | None = None
     am_stop_time: str | None = None
     pm_stop_time: str | None = None
+    am_scheduled: time | None = None
+    pm_scheduled: time | None = None
     stop_address: str | None = None
     stop_latitude: float | None = None
     stop_longitude: float | None = None
@@ -343,6 +410,8 @@ def _build_student(
         school_name=rider.get("schoolName"),
         am_stop_time=rider.get("amStopTime"),
         pm_stop_time=rider.get("pmStopTime"),
+        am_scheduled=parse_stop_time(rider.get("amStopTime")),
+        pm_scheduled=parse_stop_time(rider.get("pmStopTime")),
         stop_address=rider.get("amStopAddress") or rider.get("pmStopAddress"),
         stop_latitude=stop_latitude or None,
         stop_longitude=stop_longitude or None,
@@ -430,6 +499,12 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self.students = students
         self.distance_in_km = False
         self._last_server_time: dict[int, int] = {}
+        self._store: Store[dict[str, list[dict[str, Any]]]] = Store(
+            hass, STORAGE_VERSION, f"{ARRIVAL_STORAGE_KEY}.{config_entry.entry_id}"
+        )
+        self._arrivals: dict[int, list[RunArrival]] = {}
+        # (child_id, run, local date) -> closest approach seen so far.
+        self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -455,5 +530,177 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
             # ``isDistKm`` is an account-level flag repeated on every response.
             self.distance_in_km = bool(info.get("isDistKm"))
+            self._observe(child_id, student, info.get("dist"))
+
+        if self._promote_pending():
+            await self._async_save_arrivals()
 
         return results
+
+    # ------------------------------------------------------------------
+    # Arrival observation
+    # ------------------------------------------------------------------
+
+    @property
+    def _arrival_threshold(self) -> float:
+        """Return how close counts as an arrival, in the account's units."""
+        return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
+
+    def _observe(self, child_id: int, student: Student, dist: Any) -> None:
+        """Track the closest approach inside whichever run window is open."""
+        if dist is None:
+            return
+        try:
+            distance = float(dist)
+        except (TypeError, ValueError):
+            return
+
+        now = dt_util.utcnow()
+        for run, scheduled in (
+            (RUN_AM, student.am_scheduled),
+            (RUN_PM, student.pm_scheduled),
+        ):
+            window = run_window(scheduled, now)
+            if window is None or not window[0] <= dt_util.as_local(now) <= window[1]:
+                continue
+            key = (child_id, run, dt_util.as_local(now).date())
+            best = self._pending.get(key)
+            if best is None or distance < best[0]:
+                self._pending[key] = (distance, now)
+
+    def _promote_pending(self) -> bool:
+        """Turn closed windows into arrivals. Returns True if anything changed."""
+        now = dt_util.utcnow()
+        local_now = dt_util.as_local(now)
+        changed = False
+
+        for key in list(self._pending):
+            child_id, run, day = key
+            student = (self.students.data or {}).get(child_id)
+            if student is None:
+                del self._pending[key]
+                continue
+
+            scheduled = student.am_scheduled if run == RUN_AM else student.pm_scheduled
+            window = run_window(scheduled, now)
+            still_open = (
+                window is not None
+                and day == local_now.date()
+                and local_now <= window[1]
+            )
+            if still_open:
+                continue
+
+            closest, when = self._pending.pop(key)
+            # A run where the bus never really came — nobody to collect, or a
+            # cancelled route — must not be learned as an arrival time.
+            if closest > self._arrival_threshold:
+                _LOGGER.debug(
+                    "Ignoring %s run on %s: closest approach was %.1f",
+                    run,
+                    day,
+                    closest,
+                )
+                continue
+
+            history = self._arrivals.setdefault(child_id, [])
+            history.append(RunArrival(run=run, arrival=when, closest=closest))
+            history.sort(key=lambda item: item.arrival)
+            del history[:-ARRIVAL_HISTORY_LIMIT]
+            changed = True
+
+        return changed
+
+    async def async_load_arrivals(self) -> None:
+        """Restore observed arrivals saved by a previous run."""
+        stored = await self._store.async_load() or {}
+        for raw_child_id, arrivals in stored.items():
+            try:
+                child_id = int(raw_child_id)
+            except (TypeError, ValueError):
+                continue
+            restored = [
+                RunArrival(
+                    run=item["run"],
+                    arrival=parsed,
+                    closest=float(item.get("closest", 0.0)),
+                )
+                for item in arrivals
+                if item.get("run") in (RUN_AM, RUN_PM)
+                and (parsed := dt_util.parse_datetime(item.get("at", ""))) is not None
+            ]
+            if restored:
+                self._arrivals[child_id] = restored
+
+    async def _async_save_arrivals(self) -> None:
+        """Persist observed arrivals."""
+        await self._store.async_save(
+            {
+                str(child_id): [
+                    {
+                        "run": item.run,
+                        "at": item.arrival.isoformat(),
+                        "closest": item.closest,
+                    }
+                    for item in arrivals
+                ]
+                for child_id, arrivals in self._arrivals.items()
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Prediction
+    # ------------------------------------------------------------------
+
+    def predict_next_arrival(self, child_id: int) -> ArrivalPrediction | None:
+        """Predict when the bus next reaches this rider's stop."""
+        student = (self.students.data or {}).get(child_id)
+        if student is None:
+            return None
+
+        local_now = dt_util.as_local(dt_util.utcnow())
+        candidates: list[ArrivalPrediction] = []
+
+        for run, scheduled in (
+            (RUN_AM, student.am_scheduled),
+            (RUN_PM, student.pm_scheduled),
+        ):
+            if scheduled is None:
+                continue
+            learned, samples = self._learned_time(child_id, run)
+            predicted_time = learned or scheduled
+            for day_offset in (0, 1):
+                moment = (local_now + timedelta(days=day_offset)).replace(
+                    hour=predicted_time.hour,
+                    minute=predicted_time.minute,
+                    second=0,
+                    microsecond=0,
+                )
+                if moment > local_now:
+                    candidates.append(
+                        ArrivalPrediction(
+                            run=run,
+                            arrival=dt_util.as_utc(moment),
+                            source=SOURCE_LEARNED if learned else SOURCE_SCHEDULED,
+                            samples=samples,
+                            scheduled=scheduled,
+                        )
+                    )
+                    break
+
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item.arrival)
+
+    def _learned_time(self, child_id: int, run: str) -> tuple[time | None, int]:
+        """Return the median observed arrival time of day for a run."""
+        times = sorted(
+            dt_util.as_local(item.arrival).hour * 60
+            + dt_util.as_local(item.arrival).minute
+            for item in self._arrivals.get(child_id, [])
+            if item.run == run
+        )
+        if not times:
+            return None, 0
+        middle = times[len(times) // 2]
+        return time(hour=middle // 60, minute=middle % 60), len(times)
