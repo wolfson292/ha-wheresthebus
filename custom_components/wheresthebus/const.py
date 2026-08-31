@@ -62,8 +62,12 @@ BUS_STATUS_OPTIONS: Final = [STATUS_CURRENT, STATUS_STALE, STATUS_INACTIVE]
 
 # The scan endpoint only ever returns the current day, so scans are
 # accumulated locally and persisted to survive both midnight and restarts.
-STORAGE_VERSION: Final = 2
+# Each store versions its own schema independently.  Bumping a shared constant
+# makes Home Assistant demand a migration for a store whose shape never
+# changed, and it raises NotImplementedError rather than carrying on.
+STORAGE_VERSION: Final = 1
 STORAGE_KEY: Final = "wheresthebus_scans"
+ARRIVAL_STORAGE_VERSION: Final = 1
 ARRIVAL_STORAGE_KEY: Final = "wheresthebus_arrivals"
 # Bounded by count rather than by age: it keeps storage small without the
 # retained history depending on how long Home Assistant has been running, and

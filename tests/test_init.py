@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -409,3 +410,40 @@ async def test_the_early_decoy_pass_is_not_learned(
     assert prediction.source == "scheduled"
     assert prediction.samples == 0
     assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:56"
+
+
+async def test_setup_survives_a_scan_store_written_by_an_older_version(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """An existing scan store must not block setup.
+
+    The scan store's shape has never changed, so it stays at version 1. Home
+    Assistant raises NotImplementedError for a version mismatch with no
+    migration function, which would take the whole entry down on upgrade.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_scans.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"wheresthebus_scans.{mock_config_entry.entry_id}",
+        "data": {
+            "12345678": [
+                {
+                    "t": "2026-08-26T20:19:59+00:00",
+                    "l": "Maple Rd, Springfield",
+                    "m": "Keypad",
+                    "b": "1234",
+                }
+            ]
+        },
+    }
+
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    # The stored scan is still there, merged with whatever the API returned.
+    assert hass.states.get("sensor.robin_alex_rivera_last_pickup") is not None

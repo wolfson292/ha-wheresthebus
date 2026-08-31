@@ -20,6 +20,7 @@ from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .const import (
     ARRIVAL_HISTORY_LIMIT,
     ARRIVAL_STORAGE_KEY,
+    ARRIVAL_STORAGE_VERSION,
     ARRIVAL_THRESHOLD_KM,
     ARRIVAL_THRESHOLD_MILES,
     DOMAIN,
@@ -500,7 +501,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self.distance_in_km = False
         self._last_server_time: dict[int, int] = {}
         self._store: Store[dict[str, list[dict[str, Any]]]] = Store(
-            hass, STORAGE_VERSION, f"{ARRIVAL_STORAGE_KEY}.{config_entry.entry_id}"
+            hass,
+            ARRIVAL_STORAGE_VERSION,
+            f"{ARRIVAL_STORAGE_KEY}.{config_entry.entry_id}",
         )
         self._arrivals: dict[int, list[RunArrival]] = {}
         # (child_id, run, local date) -> closest approach seen so far.
