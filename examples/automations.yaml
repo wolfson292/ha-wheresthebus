@@ -1,0 +1,339 @@
+# WheresTheBus — example automations
+#
+# Seven automations: four banner alerts and a three-part iOS Live Activity.
+#
+# Before using, replace:
+#   RIDER          your rider's entity slug, e.g. jane_smith
+#                  (Settings > Devices & Services > WheresTheBus > the device)
+#   NOTIFY_TARGET  your notify service, e.g. notify.mobile_app_janes_iphone
+#                  or a notify group covering everyone who should be told
+#   /school-bus/overview
+#                  the path to your dashboard, if you renamed it
+#
+#   sed -i '' -e 's/RIDER/jane_smith/g' -e 's/NOTIFY_TARGET/notify.mobile_app_x/g' \
+#     automations.yaml
+#
+# Then paste into automations.yaml, or create each via
+# Settings > Automations > three-dots > Edit in YAML.
+#
+# The time windows below bracket a 07:56 and 17:48 timetable. Change them to
+# straddle your own scheduled stop times — they matter more than they look:
+# buses routinely pass a stop on unrelated earlier routes, and without the
+# windows those passes fire every position-based alert. On the route these
+# were written against, the bus sat at the stop at 06:13 before an 07:56
+# pickup, every single day.
+#
+# Needs Home Assistant 2026.7+ for the Live Activity automations. The banner
+# alerts work on any version that has the integration.
+
+# ---------------------------------------------------------------------------
+# 1. Ten minutes out, from the learned prediction
+# ---------------------------------------------------------------------------
+# A native time trigger on a timestamp sensor with a negative offset — no
+# templates, no polling. Held silent until the run has been learned: anchored
+# to the timetable instead, this fired 8 minutes AFTER the bus had been and
+# gone, which is worse than no alert at all.
+- id: wtb_bus_10_min
+  alias: School bus — 10 minutes away
+  mode: single
+  triggers:
+    - trigger: time
+      at:
+        entity_id: sensor.RIDER_next_arrival
+        offset: "-00:10:00"
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: state
+      entity_id: sensor.RIDER_next_arrival
+      attribute: prediction_source
+      state: learned
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: [inactive, unknown, unavailable]
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: >-
+          10 minutes from {{ 'the stop' if
+          state_attr('sensor.RIDER_next_arrival', 'run') == 'am' else 'home' }}
+          — around {{ (states('sensor.RIDER_next_arrival') | as_datetime |
+          as_local).strftime('%-I:%M %p') }}.
+        data:
+          tag: school-bus
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+          push:
+            interruption-level: time-sensitive
+            sound: default
+
+# ---------------------------------------------------------------------------
+# 2. Five minutes out, from the learned prediction
+# ---------------------------------------------------------------------------
+- id: wtb_bus_5_min
+  alias: School bus — 5 minutes away
+  mode: single
+  triggers:
+    - trigger: time
+      at:
+        entity_id: sensor.RIDER_next_arrival
+        offset: "-00:05:00"
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: state
+      entity_id: sensor.RIDER_next_arrival
+      attribute: prediction_source
+      state: learned
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: [inactive, unknown, unavailable]
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: >-
+          5 minutes from {{ 'the stop' if
+          state_attr('sensor.RIDER_next_arrival', 'run') == 'am' else 'home' }}
+          — around {{ (states('sensor.RIDER_next_arrival') | as_datetime |
+          as_local).strftime('%-I:%M %p') }}.
+        data:
+          tag: school-bus
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+          push:
+            interruption-level: time-sensitive
+            sound: default
+
+# ---------------------------------------------------------------------------
+# 3. Closing in — the fallback while a run is still unlearned
+# ---------------------------------------------------------------------------
+# Position-based, so it needs no history. Active only while the prediction is
+# still the timetable, then steps aside so it never duplicates alert 2.
+- id: wtb_bus_closing_in
+  alias: School bus — closing in
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.RIDER_distance_to_stop
+      below: 1.2
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: or
+      conditions:
+        - condition: time
+          after: "07:20:00"
+          before: "08:40:00"
+        - condition: time
+          after: "17:10:00"
+          before: "18:40:00"
+    - condition: state
+      entity_id: sensor.RIDER_next_arrival
+      attribute: prediction_source
+      state: scheduled
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: [inactive, unknown, unavailable]
+    # Once per run. numeric_state re-arms when the value climbs back above the
+    # threshold, and buses wander past the stop again after pulling away.
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none or (now() -
+        this.attributes.last_triggered).total_seconds() > 10800 }}
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: >-
+          Getting close — {{ states('sensor.RIDER_distance_to_stop') }} miles
+          from the stop.
+        data:
+          tag: school-bus
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+          push:
+            interruption-level: time-sensitive
+            sound: default
+
+# ---------------------------------------------------------------------------
+# 4. Arriving now — observed position, never a prediction
+# ---------------------------------------------------------------------------
+# The most reliable of the four, because it cannot be wrong about where the bus
+# actually is. Measured about a minute of warning at 0.3 miles; widen the
+# threshold if you want longer. Rename it after your own street.
+- id: wtb_bus_arriving
+  alias: School bus — arriving now
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.RIDER_distance_to_stop
+      below: 0.3
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: or
+      conditions:
+        - condition: time
+          after: "07:20:00"
+          before: "08:40:00"
+        - condition: time
+          after: "17:10:00"
+          before: "18:40:00"
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none or (now() -
+        this.attributes.last_triggered).total_seconds() > 10800 }}
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: Turning onto your street — arriving at the stop now.
+        data:
+          tag: school-bus
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+          push:
+            interruption-level: time-sensitive
+            sound: default
+
+# ---------------------------------------------------------------------------
+# 5. Live Activity — start (iOS, Home Assistant 2026.7+)
+# ---------------------------------------------------------------------------
+# Opens on the Lock Screen and in the Dynamic Island 15 minutes out. The
+# countdown runs on the device via chronometer rather than by pushing a new
+# value: iOS throttles and eventually drops Live Activities that are updated
+# too often.
+#
+# The phone must complete a token handshake first. If nothing appears, open the
+# companion app and sync Live Activities in its settings.
+- id: wtb_bus_live_start
+  alias: School bus — start Live Activity
+  mode: single
+  triggers:
+    - trigger: time
+      at:
+        entity_id: sensor.RIDER_next_arrival
+        offset: "-00:15:00"
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: state
+      entity_id: sensor.RIDER_next_arrival
+      attribute: prediction_source
+      state: learned
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: [inactive, unknown, unavailable]
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: >-
+          Arriving at {{ 'the stop' if state_attr('sensor.RIDER_next_arrival',
+          'run') == 'am' else 'home' }} around {{
+          (states('sensor.RIDER_next_arrival') | as_datetime |
+          as_local).strftime('%-I:%M %p') }}
+        data:
+          tag: school-bus-live
+          live_update: true
+          chronometer: true
+          when: "{{ states('sensor.RIDER_next_arrival') | as_timestamp | int }}"
+          notification_icon: mdi:bus-school
+          notification_icon_color: "#FFC72C"
+          color: "#FFC72C"
+          # url travels per update, so it must be repeated on every push.
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+          push:
+            interruption-level: time-sensitive
+
+# ---------------------------------------------------------------------------
+# 6. Live Activity — update
+# ---------------------------------------------------------------------------
+# Same tag refreshes the activity in place, silently and with no banner, so it
+# does not double up with alert 4. One discrete update, not a per-poll stream.
+- id: wtb_bus_live_update
+  alias: School bus — update Live Activity
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.RIDER_distance_to_stop
+      below: 0.3
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: or
+      conditions:
+        - condition: time
+          after: "07:20:00"
+          before: "08:40:00"
+        - condition: time
+          after: "17:10:00"
+          before: "18:40:00"
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none or (now() -
+        this.attributes.last_triggered).total_seconds() > 10800 }}
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        title: School bus
+        message: Arriving now
+        data:
+          tag: school-bus-live
+          live_update: true
+          notification_icon: mdi:bus-stop
+          notification_icon_color: "#4CAF50"
+          color: "#4CAF50"
+          url: /school-bus/overview
+          clickAction: /school-bus/overview
+
+# ---------------------------------------------------------------------------
+# 7. Live Activity — end
+# ---------------------------------------------------------------------------
+# Deliberately not anchored to next_arrival plus an offset: that sensor rolls
+# forward to the following run the moment an arrival passes, so such a trigger
+# would chase tomorrow and never fire. Clearing a tag with no running activity
+# is a harmless no-op, so the fixed-time backstops cost nothing.
+- id: wtb_bus_live_end
+  alias: School bus — end Live Activity
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.RIDER_distance_to_stop
+      above: 1.5
+    - trigger: time
+      at: "08:50:00"
+    - trigger: time
+      at: "18:50:00"
+  conditions:
+    - condition: time
+      weekday: [mon, tue, wed, thu, fri]
+    - condition: or
+      conditions:
+        - condition: time
+          after: "07:20:00"
+          before: "08:55:00"
+        - condition: time
+          after: "17:10:00"
+          before: "18:55:00"
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none or (now() -
+        this.attributes.last_triggered).total_seconds() > 10800 }}
+  actions:
+    - action: NOTIFY_TARGET
+      data:
+        message: clear_notification
+        data:
+          tag: school-bus-live

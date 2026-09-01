@@ -93,10 +93,22 @@ ARRIVAL_THRESHOLD_KM: Final = 0.5
 # six school weeks.
 ARRIVAL_HISTORY_LIMIT: Final = 30
 
+# Occasionally a bus runs badly late — a breakdown, a substitute driver, a
+# closed road.  Those days are real, but they are not the pattern, so they are
+# excluded from the prediction while still being kept in history.
+#
+# The cutoff is the median absolute deviation scaled to a standard deviation
+# (x1.4826) at three sigma, which adapts to how tight a given run actually is.
+# The floor stops that being over-eager: a run clustered inside two minutes
+# would otherwise reject an ordinary five-minute delay as anomalous.
+OUTLIER_MAD_MULTIPLIER: Final = 4.45
+OUTLIER_FLOOR_MINUTES: Final = 12
+
 ATTR_RUN: Final = "run"
 ATTR_PREDICTION_SOURCE: Final = "prediction_source"
 ATTR_SAMPLES: Final = "samples"
 ATTR_SPREAD_MINUTES: Final = "spread_minutes"
+ATTR_OUTLIERS_EXCLUDED: Final = "outliers_excluded"
 ATTR_SCHEDULED: Final = "scheduled"
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"

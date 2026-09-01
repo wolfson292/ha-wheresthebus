@@ -24,6 +24,8 @@ from .const import (
     ARRIVAL_THRESHOLD_KM,
     ARRIVAL_THRESHOLD_MILES,
     DOMAIN,
+    OUTLIER_FLOOR_MINUTES,
+    OUTLIER_MAD_MULTIPLIER,
     RUN_AM,
     RUN_PM,
     RUN_WINDOW_MINUTES,
@@ -76,6 +78,7 @@ class ArrivalPrediction:
     source: str
     samples: int
     spread: int | None
+    outliers: int
     scheduled: time
 
 
@@ -326,6 +329,33 @@ class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
             await self._async_save_history()
 
         return students
+
+
+def _median(values: list[int]) -> int:
+    """Return the middle value of a sorted, non-empty list."""
+    return values[len(values) // 2]
+
+
+def _reject_outliers(times: list[int]) -> tuple[list[int], int]:
+    """Drop arrivals far enough from the median to be a bad day, not a pattern.
+
+    ``times`` must be sorted. Returns the arrivals to learn from and how many
+    were discarded. With too few samples to judge, everything is kept: two
+    arrivals cannot tell you which of them is the anomaly.
+    """
+    minimum_to_judge = 3
+    if len(times) < minimum_to_judge:
+        return times, 0
+
+    middle = _median(times)
+    deviation = _median(sorted(abs(value - middle) for value in times))
+    threshold = max(OUTLIER_MAD_MULTIPLIER * deviation, OUTLIER_FLOOR_MINUTES)
+
+    kept = [value for value in times if abs(value - middle) <= threshold]
+    # Never discard everything, however strange the data looks.
+    if not kept:
+        return times, 0
+    return kept, len(times) - len(kept)
 
 
 def _trim_per_run(history: list[RunArrival]) -> list[RunArrival]:
@@ -681,7 +711,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         ):
             if scheduled is None:
                 continue
-            learned, samples, spread = self._learned_time(child_id, run)
+            learned, samples, spread, outliers = self._learned_time(child_id, run)
             predicted_time = learned or scheduled
             for day_offset in (0, 1):
                 moment = (local_now + timedelta(days=day_offset)).replace(
@@ -698,6 +728,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             source=SOURCE_LEARNED if learned else SOURCE_SCHEDULED,
                             samples=samples,
                             spread=spread,
+                            outliers=outliers,
                             scheduled=scheduled,
                         )
                     )
@@ -709,14 +740,13 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
     def _learned_time(
         self, child_id: int, run: str
-    ) -> tuple[time | None, int, int | None]:
-        """Return the median observed arrival for a run, and its spread.
+    ) -> tuple[time | None, int, int | None, int]:
+        """Return the typical arrival for a run, its spread, and outliers cut.
 
-        The median across every retained arrival, not the most recent one: a
-        single bus stuck behind a train should not drag tomorrow's prediction
-        with it.  The median ignores that outlier where a mean would chase it.
-        The spread (earliest to latest, in minutes) is returned so the sensor
-        can show how tightly the run actually clusters.
+        Badly late days are discarded before the median is taken.  The median
+        already resists them, but they would still widen the reported spread
+        and, if several accumulated, drag the prediction — so they are excluded
+        from the calculation while remaining in history.
         """
         times = sorted(
             dt_util.as_local(item.arrival).hour * 60
@@ -725,7 +755,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if item.run == run
         )
         if not times:
-            return None, 0, None
-        middle = times[len(times) // 2]
-        spread = times[-1] - times[0]
-        return time(hour=middle // 60, minute=middle % 60), len(times), spread
+            return None, 0, None, 0
+
+        kept, excluded = _reject_outliers(times)
+        middle = _median(kept)
+        spread = kept[-1] - kept[0]
+        return time(hour=middle // 60, minute=middle % 60), len(kept), spread, excluded

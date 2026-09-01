@@ -24,6 +24,7 @@ from custom_components.wheresthebus.coordinator import (
     ScanEvent,
     _attach_scans,
     _pair_riders,
+    _reject_outliers,
     _trim_per_run,
     classify_scans,
     parse_bus_status,
@@ -291,3 +292,57 @@ def test_trim_per_run_keeps_each_run_independently() -> None:
     assert len([item for item in kept if item.run == SCAN_RUN_PM]) == (
         ARRIVAL_HISTORY_LIMIT
     )
+
+
+def test_reject_outliers_keeps_a_normal_run_intact() -> None:
+    """Ordinary minute-to-minute variation is the pattern, not an anomaly."""
+    times = sorted([476, 481, 482, 484, 478])
+
+    kept, excluded = _reject_outliers(times)
+
+    assert excluded == 0
+    assert kept == times
+
+
+def test_reject_outliers_drops_a_badly_late_bus() -> None:
+    """A bus 40 minutes late is a bad day and must not skew the estimate."""
+    times = sorted([476, 481, 482, 484, 478, 522])
+
+    kept, excluded = _reject_outliers(times)
+
+    assert excluded == 1
+    assert 522 not in kept
+
+
+def test_reject_outliers_tolerates_a_normal_delay_on_a_tight_run() -> None:
+    """A tight run must not treat a five minute delay as an outlier.
+
+    Without a floor the scaled deviation of a run clustered inside two minutes
+    is small enough to reject an entirely ordinary late morning.
+    """
+    times = sorted([480, 480, 481, 481, 482, 486])
+
+    kept, excluded = _reject_outliers(times)
+
+    assert excluded == 0
+    assert 486 in kept
+
+
+def test_reject_outliers_needs_enough_samples_to_judge() -> None:
+    """Two arrivals cannot tell you which of them is the anomaly."""
+    times = sorted([480, 540])
+
+    kept, excluded = _reject_outliers(times)
+
+    assert excluded == 0
+    assert kept == times
+
+
+def test_reject_outliers_never_discards_everything() -> None:
+    """However strange the data, some estimate beats no estimate."""
+    times = sorted([100, 500, 900])
+
+    kept, excluded = _reject_outliers(times)
+
+    assert kept
+    assert excluded < len(times)
