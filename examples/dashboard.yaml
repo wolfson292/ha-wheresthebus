@@ -1,0 +1,224 @@
+# WheresTheBus — example dashboard
+#
+# Three views: an at-a-glance Overview, a full-screen Map, and History.
+#
+# Replace every RIDER with your rider's entity slug. Find it under
+# Settings > Devices & Services > WheresTheBus, on the rider's device: entity
+# ids look like sensor.jane_smith_next_arrival, so RIDER would be jane_smith.
+#
+#   sed -i '' 's/RIDER/jane_smith/g' dashboard.yaml
+#
+# To install: Settings > Dashboards > Add dashboard > New dashboard from
+# scratch. Open it, then three-dots > Raw configuration editor, and paste
+# everything below this header.
+#
+# Needs Home Assistant 2024.11+ for sections views and grid_options.
+
+views:
+- title: Overview
+  path: overview
+  icon: mdi:bus-school
+  type: sections
+  max_columns: 3
+  badges:
+  - type: entity
+    entity: sensor.RIDER_next_arrival
+    show_name: true
+    name: Next
+  - type: entity
+    entity: sensor.RIDER_bus_status
+    show_name: true
+    name: GPS
+  - type: entity
+    entity: sensor.RIDER_distance_to_stop
+    show_name: true
+    name: To stop
+  - type: entity
+    entity: sensor.RIDER_bus_number
+    show_name: true
+    name: Bus
+  sections:
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Where is the bus
+      heading_style: title
+      icon: mdi:map-marker-radius
+    - type: map
+      entities:
+      - device_tracker.RIDER_bus
+      auto_fit: true
+      theme_mode: auto
+      hours_to_show: 3
+      grid_options:
+        columns: full
+        rows: 6
+    - type: tile
+      entity: sensor.RIDER_next_arrival
+      name: Next arrival
+      icon: mdi:bus-clock
+      grid_options:
+        columns: full
+    - type: markdown
+      text_only: true
+      content: '{% set s = ''sensor.RIDER_next_arrival'' %}{% set n = state_attr(s, ''samples'') %}{%
+        set run = ''Morning'' if state_attr(s, ''run'') == ''am'' else ''Afternoon'' %}{% if state_attr(s,
+        ''prediction_source'') == ''learned'' %}{{ run }} run, learned from {{ n }} observed arrival{{
+        '''' if n == 1 else ''s'' }}.{% else %}{{ run }} run, using the {{ state_attr(s, ''scheduled'')
+        }} timetable — no arrivals observed for this run yet.{% endif %}'
+      grid_options:
+        columns: full
+        rows: auto
+    - type: tile
+      entity: sensor.RIDER_distance_to_stop
+      name: Distance to stop
+      icon: mdi:map-marker-distance
+      features:
+      - type: trend-graph
+        hours_to_show: 6
+      grid_options:
+        columns: 12
+    - type: tile
+      entity: sensor.RIDER_bus_status
+      name: GPS status
+      icon: mdi:crosshairs-gps
+      grid_options:
+        columns: 12
+    - type: tile
+      entity: sensor.RIDER_gps_age
+      name: GPS age
+      icon: mdi:crosshairs-gps
+      grid_options:
+        columns: 12
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.RIDER_eta
+        state_not: unknown
+      - condition: state
+        entity: sensor.RIDER_eta
+        state_not: unavailable
+      card:
+        type: tile
+        entity: sensor.RIDER_eta
+        name: ETA
+        icon: mdi:clock-fast
+  - type: grid
+    cards:
+    - type: heading
+      heading: Today's ID scans
+      heading_style: title
+      icon: mdi:card-account-details-outline
+    - type: markdown
+      content: '{% set p = ''sensor.RIDER_last_pickup'' %}{% set d = ''sensor.RIDER_last_drop_off'' %}{%
+        set bad = [''unknown'',''unavailable'',''none''] %}**Picked up**
+
+        {% if states(p) not in bad %}{{ (states(p)|as_datetime|as_local).strftime(''%-I:%M %p'') }} at
+        {{ state_attr(p,''scan_location'') }}{% else %}No scan yet today{% endif %}
+
+
+        **Dropped off**
+
+        {% if states(d) not in bad %}{{ (states(d)|as_datetime|as_local).strftime(''%-I:%M %p'') }} at
+        {{ state_attr(d,''scan_location'') }}{% else %}No scan yet today{% endif %}'
+      grid_options:
+        columns: full
+        rows: auto
+    - type: tile
+      entity: sensor.RIDER_last_pickup
+      name: Last pickup
+      icon: mdi:bus-marker
+      grid_options:
+        columns: full
+    - type: tile
+      entity: sensor.RIDER_last_drop_off
+      name: Last drop-off
+      icon: mdi:bus-stop
+      grid_options:
+        columns: full
+    - type: tile
+      entity: sensor.RIDER_last_scan
+      name: Most recent scan
+      icon: mdi:card-account-details-outline
+      grid_options:
+        columns: full
+    - type: heading
+      heading: Scans are boarding + school arrival only — there is no scan when stepping off at home,
+        and all three reset after midnight.
+      heading_style: subtitle
+      icon: mdi:information-outline
+  - type: grid
+    cards:
+    - type: heading
+      heading: Schedule
+      heading_style: title
+      icon: mdi:calendar-clock
+    - type: tile
+      entity: sensor.RIDER_morning_stop_time
+      name: Morning stop
+      icon: mdi:weather-sunset-up
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.RIDER_afternoon_stop_time
+      name: Afternoon stop
+      icon: mdi:weather-sunset-down
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.RIDER_bus_number
+      name: Bus number
+      icon: mdi:bus
+      grid_options:
+        columns: full
+- title: Map
+  path: map
+  icon: mdi:map-marker-radius
+  type: panel
+  cards:
+  - type: map
+    entities:
+    - device_tracker.RIDER_bus
+    auto_fit: true
+    theme_mode: auto
+    hours_to_show: 12
+- title: History
+  path: history
+  icon: mdi:chart-line
+  type: sections
+  max_columns: 2
+  sections:
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Distance to stop
+      heading_style: title
+      icon: mdi:chart-line
+    - type: history-graph
+      hours_to_show: 24
+      entities:
+      - entity: sensor.RIDER_distance_to_stop
+        name: Distance to stop
+        color: '#f9a825'
+      grid_options:
+        columns: full
+        rows: 4
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Scan and bus activity
+      heading_style: title
+      icon: mdi:format-list-bulleted
+    - type: logbook
+      hours_to_show: 48
+      target:
+        entity_id:
+        - sensor.RIDER_last_pickup
+        - sensor.RIDER_last_drop_off
+        - device_tracker.RIDER_bus
+      grid_options:
+        columns: full
+        rows: 5

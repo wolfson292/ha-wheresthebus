@@ -174,6 +174,13 @@ automation:
   automation can fire on the wrong run. Trigger on `sensor.<rider>_last_pickup`
   changing, or gate the proximity trigger on the scheduled stop time.
 
+## Examples
+
+A ready-made [dashboard and alerting automations](examples/) live in
+`examples/` — a three-view dashboard, four banner alerts, and an iOS Live
+Activity that counts down on the Lock Screen. Copy them and replace the
+placeholders; see [examples/README.md](examples/README.md).
+
 ## Brand images
 
 Home Assistant does **not** load brand images from this repository or from the

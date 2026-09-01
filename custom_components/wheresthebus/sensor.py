@@ -21,6 +21,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import WheresTheBusConfigEntry
 from .const import (
     ATTR_BUS_NUMBER,
+    ATTR_OUTLIERS_EXCLUDED,
     ATTR_PREDICTION_SOURCE,
     ATTR_RAW_STATUS,
     ATTR_RUN,
@@ -268,6 +269,7 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             ATTR_PREDICTION_SOURCE: prediction.source,
             ATTR_SAMPLES: prediction.samples,
             ATTR_SPREAD_MINUTES: prediction.spread,
+            ATTR_OUTLIERS_EXCLUDED: prediction.outliers,
             ATTR_SCHEDULED: prediction.scheduled.strftime("%H:%M"),
         }
 
