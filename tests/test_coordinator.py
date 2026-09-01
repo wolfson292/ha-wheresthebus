@@ -3,16 +3,28 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from homeassistant.util import dt as dt_util
 
-from custom_components.wheresthebus.const import SCAN_DROPOFF, SCAN_PICKUP
+from custom_components.wheresthebus.const import (
+    ARRIVAL_HISTORY_LIMIT,
+    SCAN_DROPOFF,
+    SCAN_PICKUP,
+)
+from custom_components.wheresthebus.const import (
+    RUN_AM as SCAN_RUN_AM,
+)
+from custom_components.wheresthebus.const import (
+    RUN_PM as SCAN_RUN_PM,
+)
 from custom_components.wheresthebus.coordinator import (
+    RunArrival,
     ScanEvent,
     _attach_scans,
     _pair_riders,
+    _trim_per_run,
     classify_scans,
     parse_bus_status,
     parse_stop_time,
@@ -255,3 +267,27 @@ def test_run_window_excludes_the_early_decoy_pass() -> None:
 
     assert not start <= decoy <= end
     assert start <= real <= end
+
+
+def test_trim_per_run_keeps_each_run_independently() -> None:
+    """A busy run must not evict the other run's history."""
+    base = dt_util.utc_from_timestamp(1787746325)
+    history = [
+        RunArrival(run=SCAN_RUN_AM, arrival=base, closest=0.0),
+        *[
+            RunArrival(
+                run=SCAN_RUN_PM,
+                arrival=base + timedelta(days=day),
+                closest=0.0,
+            )
+            for day in range(1, ARRIVAL_HISTORY_LIMIT + 6)
+        ],
+    ]
+
+    kept = _trim_per_run(history)
+
+    # The single morning survives a flood of afternoons.
+    assert [item for item in kept if item.run == SCAN_RUN_AM]
+    assert len([item for item in kept if item.run == SCAN_RUN_PM]) == (
+        ARRIVAL_HISTORY_LIMIT
+    )

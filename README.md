@@ -48,9 +48,17 @@ would rewrite itself on every poll, and Home Assistant renders a timestamp as
 relative time anyway. It also means alerting automations are plain `time`
 triggers with a negative offset — no templates.
 
-The prediction is the median of previously observed arrivals for that run,
-falling back to the district's scheduled stop time until enough have been
-seen. The `prediction_source` and `samples` attributes say which is in use.
+The prediction is the median of **every retained arrival** for that run, not
+the most recent one — a single bus stuck behind a train should not drag
+tomorrow's prediction with it, and the median ignores an outlier that a mean
+would chase. Until any arrival has been observed it falls back to the
+district's scheduled stop time. The `prediction_source`, `samples` and
+`spread_minutes` attributes report which is in use and how tightly the run
+actually clusters.
+
+Each run keeps its own history (the most recent 30, roughly six school
+weeks). The two runs do not share a budget: a stretch of missed afternoons
+would otherwise quietly evict mornings that were still worth learning from.
 
 Two things make the observations trustworthy:
 
