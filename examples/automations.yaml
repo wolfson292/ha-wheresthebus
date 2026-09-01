@@ -262,6 +262,11 @@
 # ---------------------------------------------------------------------------
 # Same tag refreshes the activity in place, silently and with no banner, so it
 # does not double up with alert 4. One discrete update, not a per-poll stream.
+#
+# chronometer: false matters. A chronometer left running past its target does
+# not stop — it counts upward, so a late bus turns the activity into a growing
+# "1:40:51" that reads as something having gone wrong. Once the bus is here the
+# countdown has done its job.
 - id: wtb_bus_live_update
   alias: School bus — update Live Activity
   mode: single
@@ -292,6 +297,7 @@
         data:
           tag: school-bus-live
           live_update: true
+          chronometer: false
           notification_icon: mdi:bus-stop
           notification_icon_color: "#4CAF50"
           color: "#4CAF50"
