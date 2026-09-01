@@ -6,7 +6,7 @@ placeholders — they are meant to be copied and edited, not installed as-is.
 
 | File | What it is |
 | --- | --- |
-| [`dashboard.yaml`](dashboard.yaml) | Three-view dashboard: Overview, full-screen Map, History |
+| [`dashboard.yaml`](dashboard.yaml) | Four-view dashboard: Overview, Map, History, and a Predictions page |
 | [`automations.yaml`](automations.yaml) | Four banner alerts plus a three-part iOS Live Activity |
 
 ## What to replace

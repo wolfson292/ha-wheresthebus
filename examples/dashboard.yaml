@@ -1,6 +1,7 @@
 # WheresTheBus — example dashboard
 #
-# Three views: an at-a-glance Overview, a full-screen Map, and History.
+# Four views: an at-a-glance Overview, a full-screen Map, History, and a
+# Predictions page explaining where the estimated arrival time comes from.
 #
 # Replace every RIDER with your rider's entity slug. Find it under
 # Settings > Devices & Services > WheresTheBus, on the rider's device: entity
@@ -219,6 +220,127 @@ views:
         - sensor.RIDER_last_pickup
         - sensor.RIDER_last_drop_off
         - device_tracker.RIDER_bus
+      grid_options:
+        columns: full
+        rows: 5
+- title: Predictions
+  path: predictions
+  icon: mdi:chart-bell-curve
+  type: sections
+  max_columns: 2
+  sections:
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Next arrival
+      heading_style: title
+      icon: mdi:bus-clock
+    - type: tile
+      entity: sensor.RIDER_next_arrival
+      name: Predicted arrival
+      icon: mdi:bus-clock
+      grid_options:
+        columns: full
+    - type: markdown
+      content: '{% set s = ''sensor.RIDER_next_arrival'' %}{% set p = states(s) | as_datetime | as_local
+        %}{% set sched = state_attr(s, ''scheduled'') %}{% set n = state_attr(s, ''samples'') %}{% set
+        spread = state_attr(s, ''spread_minutes'') %}{% set out = state_attr(s, ''outliers_excluded'')
+        %}{% set learned = state_attr(s, ''prediction_source'') == ''learned'' %}{% set sh = sched.split('':'')[0]
+        | int %}{% set sm = sched.split('':'')[1] | int %}{% set delta = (p.hour * 60 + p.minute) - (sh
+        * 60 + sm) %}
+
+        | | |
+
+        |---|---|
+
+        | Run | {{ ''Morning pickup'' if state_attr(s, ''run'') == ''am'' else ''Afternoon drop-off''
+        }} |
+
+        | Predicted | **{{ p.strftime(''%-I:%M %p'') }}** |
+
+        | District timetable | {{ sched }} |
+
+        | Difference | {% if delta > 0 %}{{ delta }} min later than timetable{% elif delta < 0 %}{{ delta
+        * -1 }} min earlier than timetable{% else %}exactly on the timetable{% endif %} |
+
+        | Basis | {% if learned %}Median of {{ n }} observed arrival{{ '''' if n == 1 else ''s'' }}{%
+        else %}Timetable only — no arrival observed for this run yet{% endif %} |
+
+        | Observed spread | {% if learned and spread is not none %}{{ spread }} min between earliest and
+        latest{% else %}—{% endif %} |
+
+        | Late days excluded | {{ out if out is not none else 0 }} |
+
+        {% if learned and n < 3 %}
+
+        > Only {{ n }} sample{{ '''' if n == 1 else ''s'' }} so far, so treat the time as approximate.
+        Outlier rejection needs three before it can judge which day is the odd one.
+
+        {% endif %}'
+      grid_options:
+        columns: full
+        rows: auto
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: How this is worked out
+      heading_style: title
+      icon: mdi:function-variant
+    - type: markdown
+      content: '**Where the time comes from.** Each run keeps its own history of when the bus actually
+        reached the stop, and the prediction is the **median** of those, not the most recent. A median
+        is used rather than a mean so one bus stuck behind a train cannot drag tomorrow''s estimate with
+        it. Until any arrival has been seen, the district timetable is used and this page says so.
+
+
+        **What counts as an arrival.** Only a pass that comes within **0.3 miles** of the stop, **inside
+        30 minutes** of the scheduled time. Both filters matter. Buses routinely pass a stop on unrelated
+        earlier routes, and on a run where nobody boards the route can stay half a mile out without ever
+        stopping.
+
+
+        **Bad days are set aside.** An arrival more than three scaled deviations from the median is excluded
+        from the calculation but kept in history, so a genuine timetable change is still learned once
+        the new times outnumber the old. The cutoff never tightens below 12 minutes, otherwise a run that
+        clusters inside two minutes would reject an ordinary five-minute delay as anomalous.
+
+
+        **Roughly six school weeks** of arrivals are kept per run, morning and afternoon counted separately.
+
+
+        *Spread and excluded-day figures need the integration at 1.3.0 or later; older versions show a
+        dash.*'
+      grid_options:
+        columns: full
+        rows: auto
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: The evidence behind it
+      heading_style: title
+      icon: mdi:chart-line
+    - type: heading
+      heading: Each dip to zero inside the schedule window is one learned arrival.
+      heading_style: subtitle
+      icon: mdi:information-outline
+    - type: history-graph
+      hours_to_show: 36
+      entities:
+      - entity: sensor.RIDER_distance_to_stop
+        name: Distance to stop
+        color: '#f9a825'
+      grid_options:
+        columns: full
+        rows: 4
+    - type: logbook
+      hours_to_show: 96
+      target:
+        entity_id:
+        - sensor.RIDER_last_pickup
+        - sensor.RIDER_last_drop_off
       grid_options:
         columns: full
         rows: 5
