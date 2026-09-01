@@ -29,6 +29,7 @@ from .const import (
     ATTR_SCAN_METHOD,
     ATTR_SCHEDULED,
     ATTR_SCHOOL_NAME,
+    ATTR_SPREAD_MINUTES,
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
     BUS_STATUS_OPTIONS,
@@ -266,6 +267,7 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             ATTR_RUN: prediction.run,
             ATTR_PREDICTION_SOURCE: prediction.source,
             ATTR_SAMPLES: prediction.samples,
+            ATTR_SPREAD_MINUTES: prediction.spread,
             ATTR_SCHEDULED: prediction.scheduled.strftime("%H:%M"),
         }
 

@@ -75,6 +75,7 @@ class ArrivalPrediction:
     arrival: datetime
     source: str
     samples: int
+    spread: int | None
     scheduled: time
 
 
@@ -325,6 +326,16 @@ class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
             await self._async_save_history()
 
         return students
+
+
+def _trim_per_run(history: list[RunArrival]) -> list[RunArrival]:
+    """Keep the most recent ARRIVAL_HISTORY_LIMIT arrivals of each run."""
+    kept: list[RunArrival] = []
+    for run in (RUN_AM, RUN_PM):
+        matching = [item for item in history if item.run == run]
+        kept.extend(matching[-ARRIVAL_HISTORY_LIMIT:])
+    kept.sort(key=lambda item: item.arrival)
+    return kept
 
 
 def _pair_riders(
@@ -609,7 +620,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             history = self._arrivals.setdefault(child_id, [])
             history.append(RunArrival(run=run, arrival=when, closest=closest))
             history.sort(key=lambda item: item.arrival)
-            del history[:-ARRIVAL_HISTORY_LIMIT]
+            self._arrivals[child_id] = _trim_per_run(history)
             changed = True
 
         return changed
@@ -670,7 +681,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         ):
             if scheduled is None:
                 continue
-            learned, samples = self._learned_time(child_id, run)
+            learned, samples, spread = self._learned_time(child_id, run)
             predicted_time = learned or scheduled
             for day_offset in (0, 1):
                 moment = (local_now + timedelta(days=day_offset)).replace(
@@ -686,6 +697,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             arrival=dt_util.as_utc(moment),
                             source=SOURCE_LEARNED if learned else SOURCE_SCHEDULED,
                             samples=samples,
+                            spread=spread,
                             scheduled=scheduled,
                         )
                     )
@@ -695,8 +707,17 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return None
         return min(candidates, key=lambda item: item.arrival)
 
-    def _learned_time(self, child_id: int, run: str) -> tuple[time | None, int]:
-        """Return the median observed arrival time of day for a run."""
+    def _learned_time(
+        self, child_id: int, run: str
+    ) -> tuple[time | None, int, int | None]:
+        """Return the median observed arrival for a run, and its spread.
+
+        The median across every retained arrival, not the most recent one: a
+        single bus stuck behind a train should not drag tomorrow's prediction
+        with it.  The median ignores that outlier where a mean would chase it.
+        The spread (earliest to latest, in minutes) is returned so the sensor
+        can show how tightly the run actually clusters.
+        """
         times = sorted(
             dt_util.as_local(item.arrival).hour * 60
             + dt_util.as_local(item.arrival).minute
@@ -704,6 +725,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if item.run == run
         )
         if not times:
-            return None, 0
+            return None, 0, None
         middle = times[len(times) // 2]
-        return time(hour=middle // 60, minute=middle % 60), len(times)
+        spread = times[-1] - times[0]
+        return time(hour=middle // 60, minute=middle % 60), len(times), spread

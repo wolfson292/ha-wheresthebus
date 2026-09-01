@@ -87,11 +87,16 @@ RUN_WINDOW_MINUTES: Final = 30
 # learn arrivals that never happened.
 ARRIVAL_THRESHOLD_MILES: Final = 0.3
 ARRIVAL_THRESHOLD_KM: Final = 0.5
-ARRIVAL_HISTORY_LIMIT: Final = 20
+# Kept per run, not shared between them: a combined cap lets a rider's two
+# daily runs compete for slots, so a stretch of missed afternoons would quietly
+# evict the mornings that were still worth learning from. 30 each is roughly
+# six school weeks.
+ARRIVAL_HISTORY_LIMIT: Final = 30
 
 ATTR_RUN: Final = "run"
 ATTR_PREDICTION_SOURCE: Final = "prediction_source"
 ATTR_SAMPLES: Final = "samples"
+ATTR_SPREAD_MINUTES: Final = "spread_minutes"
 ATTR_SCHEDULED: Final = "scheduled"
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"
