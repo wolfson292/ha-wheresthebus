@@ -48,11 +48,22 @@
       entity_id: sensor.RIDER_next_arrival
       attribute: prediction_source
       state: learned
+    # A duration, not an instantaneous check. bus_status reports GPS
+    # freshness, not whether a bus is running: it flaps between current and
+    # stale every minute or two and drops to inactive during any GPS gap. On
+    # one morning it went inactive at 07:31 and back to current at 07:46:10,
+    # and the alert due at 07:46:00 was blocked by ten seconds. Only a
+    # sustained outage should count as no service.
     - condition: not
       conditions:
         - condition: state
           entity_id: sensor.RIDER_bus_status
-          state: [inactive, unknown, unavailable]
+          state: inactive
+          for: "00:30:00"
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: unavailable
+          for: "00:30:00"
   actions:
     - action: NOTIFY_TARGET
       data:
@@ -88,11 +99,22 @@
       entity_id: sensor.RIDER_next_arrival
       attribute: prediction_source
       state: learned
+    # A duration, not an instantaneous check. bus_status reports GPS
+    # freshness, not whether a bus is running: it flaps between current and
+    # stale every minute or two and drops to inactive during any GPS gap. On
+    # one morning it went inactive at 07:31 and back to current at 07:46:10,
+    # and the alert due at 07:46:00 was blocked by ten seconds. Only a
+    # sustained outage should count as no service.
     - condition: not
       conditions:
         - condition: state
           entity_id: sensor.RIDER_bus_status
-          state: [inactive, unknown, unavailable]
+          state: inactive
+          for: "00:30:00"
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: unavailable
+          for: "00:30:00"
   actions:
     - action: NOTIFY_TARGET
       data:
@@ -137,11 +159,22 @@
       entity_id: sensor.RIDER_next_arrival
       attribute: prediction_source
       state: scheduled
+    # A duration, not an instantaneous check. bus_status reports GPS
+    # freshness, not whether a bus is running: it flaps between current and
+    # stale every minute or two and drops to inactive during any GPS gap. On
+    # one morning it went inactive at 07:31 and back to current at 07:46:10,
+    # and the alert due at 07:46:00 was blocked by ten seconds. Only a
+    # sustained outage should count as no service.
     - condition: not
       conditions:
         - condition: state
           entity_id: sensor.RIDER_bus_status
-          state: [inactive, unknown, unavailable]
+          state: inactive
+          for: "00:30:00"
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: unavailable
+          for: "00:30:00"
     # Once per run. numeric_state re-arms when the value climbs back above the
     # threshold, and buses wander past the stop again after pulling away.
     - condition: template
@@ -229,11 +262,22 @@
       entity_id: sensor.RIDER_next_arrival
       attribute: prediction_source
       state: learned
+    # A duration, not an instantaneous check. bus_status reports GPS
+    # freshness, not whether a bus is running: it flaps between current and
+    # stale every minute or two and drops to inactive during any GPS gap. On
+    # one morning it went inactive at 07:31 and back to current at 07:46:10,
+    # and the alert due at 07:46:00 was blocked by ten seconds. Only a
+    # sustained outage should count as no service.
     - condition: not
       conditions:
         - condition: state
           entity_id: sensor.RIDER_bus_status
-          state: [inactive, unknown, unavailable]
+          state: inactive
+          for: "00:30:00"
+        - condition: state
+          entity_id: sensor.RIDER_bus_status
+          state: unavailable
+          for: "00:30:00"
   actions:
     - action: NOTIFY_TARGET
       data:
