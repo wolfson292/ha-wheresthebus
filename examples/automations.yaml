@@ -251,13 +251,29 @@
   alias: School bus — start Live Activity
   mode: single
   triggers:
+    # Two independent triggers, because one instant is too fragile. On one
+    # morning the timed trigger lost by ten seconds to a GPS gap and no
+    # activity opened at all. If the timed trigger is blocked for any reason,
+    # the bus closing to 2.5 miles inside the run window opens it anyway.
+    # The three hour guard below means whichever fires first wins.
     - trigger: time
       at:
         entity_id: sensor.RIDER_next_arrival
         offset: "-00:15:00"
+    - trigger: numeric_state
+      entity_id: sensor.RIDER_distance_to_stop
+      below: 2.5
   conditions:
     - condition: time
       weekday: [mon, tue, wed, thu, fri]
+    - condition: or
+      conditions:
+        - condition: time
+          after: "07:20:00"
+          before: "08:40:00"
+        - condition: time
+          after: "17:10:00"
+          before: "18:40:00"
     - condition: state
       entity_id: sensor.RIDER_next_arrival
       attribute: prediction_source
@@ -278,6 +294,10 @@
           entity_id: sensor.RIDER_bus_status
           state: unavailable
           for: "00:30:00"
+    - condition: template
+      value_template: >-
+        {{ this.attributes.last_triggered is none or (now() -
+        this.attributes.last_triggered).total_seconds() > 10800 }}
   actions:
     - action: NOTIFY_TARGET
       data:
