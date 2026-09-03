@@ -447,3 +447,87 @@ async def test_setup_survives_a_scan_store_written_by_an_older_version(
     assert mock_config_entry.state is ConfigEntryState.LOADED
     # The stored scan is still there, merged with whatever the API returned.
     assert hass.states.get("sensor.robin_alex_rivera_last_pickup") is not None
+
+
+async def _record_morning_arrival(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    *,
+    day: int,
+    crossed: tuple[int, int],
+    arrived: tuple[int, int],
+) -> None:
+    """Drive one morning: cross the anchor, reach the stop, close the window."""
+    buses = mock_config_entry.runtime_data.buses
+    for moment, dist in (
+        (crossed, 0.9),
+        (arrived, 0.0),
+        ((9, 0), 5.0),
+    ):
+        with freeze_time_local(2026, 9, day, *moment):
+            mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": dist}
+            await buses.async_refresh()
+            await hass.async_block_till_done()
+
+
+async def test_prediction_re_anchors_to_the_live_approach(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """An early bus is reported early, not averaged back to its usual time.
+
+    Reproduces 3 Sep: two prior mornings both arrived at 08:01, so the clock
+    median said 08:01. The bus then crossed a mile out at 07:52 and reached
+    the stop at 07:56, and the estimate stayed 08:01 until it was four
+    minutes wrong. Anchoring to the crossing plus the typical final leg
+    tracks the early bus instead.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # Two mornings, each a five minute final leg ending at 08:01.
+    for day in (1, 2):
+        await _record_morning_arrival(
+            hass,
+            mock_config_entry,
+            mock_api,
+            day=day,
+            crossed=(7, 56),
+            arrived=(8, 1),
+        )
+
+    # A third morning: the bus is a mile out at 07:52, four minutes early.
+    with freeze_time_local(2026, 9, 3, 7, 52):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.basis == "approach"
+    # 07:52 crossing + the five minute median leg, not the 08:01 clock median.
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:57"
+
+
+async def test_prediction_uses_clock_history_before_the_bus_is_close(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Far out, there is no approach to anchor to, so history is all there is."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    await _record_morning_arrival(
+        hass, mock_config_entry, mock_api, day=1, crossed=(7, 56), arrived=(8, 1)
+    )
+
+    with freeze_time_local(2026, 9, 2, 7, 30):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 4.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.basis == "historical"
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "08:01"

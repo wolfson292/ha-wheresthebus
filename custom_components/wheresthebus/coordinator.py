@@ -18,11 +18,15 @@ from homeassistant.util import dt as dt_util
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .const import (
+    APPROACH_ANCHOR_KM,
+    APPROACH_ANCHOR_MILES,
     ARRIVAL_HISTORY_LIMIT,
     ARRIVAL_STORAGE_KEY,
     ARRIVAL_STORAGE_VERSION,
     ARRIVAL_THRESHOLD_KM,
     ARRIVAL_THRESHOLD_MILES,
+    BASIS_APPROACH,
+    BASIS_HISTORICAL,
     DOMAIN,
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
@@ -76,6 +80,7 @@ class ArrivalPrediction:
     run: str
     arrival: datetime
     source: str
+    basis: str
     samples: int
     spread: int | None
     outliers: int
@@ -89,6 +94,10 @@ class RunArrival:
     run: str
     arrival: datetime
     closest: float
+    # Seconds from crossing the approach anchor to reaching the stop. None for
+    # arrivals recorded before this was tracked, or where the bus was already
+    # inside the anchor when the window opened.
+    approach_seconds: int | None = None
 
 
 def run_window(
@@ -549,6 +558,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self._arrivals: dict[int, list[RunArrival]] = {}
         # (child_id, run, local date) -> closest approach seen so far.
         self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
+        # (child_id, run, local date) -> when the bus first came inside the
+        # approach anchor for that run.
+        self._anchor: dict[tuple[int, str, date], datetime] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -586,6 +598,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     # ------------------------------------------------------------------
 
     @property
+    def _anchor_threshold(self) -> float:
+        """Return the approach anchor distance in the account's units."""
+        return APPROACH_ANCHOR_KM if self.distance_in_km else APPROACH_ANCHOR_MILES
+
+    @property
     def _arrival_threshold(self) -> float:
         """Return how close counts as an arrival, in the account's units."""
         return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
@@ -611,6 +628,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             best = self._pending.get(key)
             if best is None or distance < best[0]:
                 self._pending[key] = (distance, now)
+            if distance <= self._anchor_threshold and key not in self._anchor:
+                self._anchor[key] = now
 
     def _promote_pending(self) -> bool:
         """Turn closed windows into arrivals. Returns True if anything changed."""
@@ -636,6 +655,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 continue
 
             closest, when = self._pending.pop(key)
+            if closest > self._arrival_threshold:
+                self._anchor.pop(key, None)
             # A run where the bus never really came — nobody to collect, or a
             # cancelled route — must not be learned as an arrival time.
             if closest > self._arrival_threshold:
@@ -647,8 +668,18 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 )
                 continue
 
+            crossed = self._anchor.pop(key, None)
+            approach = (
+                int((when - crossed).total_seconds())
+                if crossed is not None and crossed <= when
+                else None
+            )
             history = self._arrivals.setdefault(child_id, [])
-            history.append(RunArrival(run=run, arrival=when, closest=closest))
+            history.append(
+                RunArrival(
+                    run=run, arrival=when, closest=closest, approach_seconds=approach
+                )
+            )
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
             changed = True
@@ -668,6 +699,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     run=item["run"],
                     arrival=parsed,
                     closest=float(item.get("closest", 0.0)),
+                    approach_seconds=item.get("approach"),
                 )
                 for item in arrivals
                 if item.get("run") in (RUN_AM, RUN_PM)
@@ -685,6 +717,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                         "run": item.run,
                         "at": item.arrival.isoformat(),
                         "closest": item.closest,
+                        "approach": item.approach_seconds,
                     }
                     for item in arrivals
                 ]
@@ -712,6 +745,26 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if scheduled is None:
                 continue
             learned, samples, spread, outliers = self._learned_time(child_id, run)
+
+            # Once the bus is inside the approach anchor for this run, when it
+            # set off no longer matters: what is left is the final leg, which
+            # is far steadier. Anchor to the crossing and stop guessing.
+            anchored = self._anchored_arrival(child_id, run, local_now)
+            if anchored is not None:
+                candidates.append(
+                    ArrivalPrediction(
+                        run=run,
+                        arrival=dt_util.as_utc(anchored),
+                        source=SOURCE_LEARNED,
+                        basis=BASIS_APPROACH,
+                        samples=samples,
+                        spread=spread,
+                        outliers=outliers,
+                        scheduled=scheduled,
+                    )
+                )
+                continue
+
             predicted_time = learned or scheduled
             for day_offset in (0, 1):
                 moment = (local_now + timedelta(days=day_offset)).replace(
@@ -726,6 +779,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             run=run,
                             arrival=dt_util.as_utc(moment),
                             source=SOURCE_LEARNED if learned else SOURCE_SCHEDULED,
+                            basis=BASIS_HISTORICAL if learned else SOURCE_SCHEDULED,
                             samples=samples,
                             spread=spread,
                             outliers=outliers,
@@ -737,6 +791,33 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         if not candidates:
             return None
         return min(candidates, key=lambda item: item.arrival)
+
+    def _anchored_arrival(
+        self, child_id: int, run: str, local_now: datetime
+    ) -> datetime | None:
+        """Estimate arrival from the live approach, or None if not applicable.
+
+        Applies only while this run's bus has already crossed the approach
+        anchor today and has not yet arrived.  Returns the crossing time plus
+        the typical final leg, so an early bus is reported early instead of
+        being averaged back towards the usual clock time.
+        """
+        crossed = self._anchor.get((child_id, run, local_now.date()))
+        if crossed is None:
+            return None
+
+        legs = sorted(
+            item.approach_seconds
+            for item in self._arrivals.get(child_id, [])
+            if item.run == run and item.approach_seconds is not None
+        )
+        if not legs:
+            return None
+
+        estimate = dt_util.as_local(crossed) + timedelta(seconds=legs[len(legs) // 2])
+        # A bus already overdue against this estimate has arrived, or is about
+        # to; leave it be rather than reporting a time in the past.
+        return estimate if estimate > local_now else None
 
     def _learned_time(
         self, child_id: int, run: str

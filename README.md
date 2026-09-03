@@ -48,8 +48,16 @@ would rewrite itself on every poll, and Home Assistant renders a timestamp as
 relative time anyway. It also means alerting automations are plain `time`
 triggers with a negative offset — no templates.
 
-The prediction is the median of **every retained arrival** for that run, not
-the most recent one — a single bus stuck behind a train should not drag
+Once the bus is within a mile of the stop the estimate **re-anchors to the
+live approach**: the moment it crossed that mile, plus the typical time the
+final leg takes. Before that it is the median of previously observed arrival
+times. The distinction matters — measured over four mornings the clock time
+of arrival varied by 8 minutes while the final leg varied by 2.5, so a bus
+that sets off early is reported early instead of being averaged back towards
+its usual time. The `prediction_basis` attribute says which is in use.
+
+The historical part is the median of **every retained arrival** for that run,
+not the most recent one — a single bus stuck behind a train should not drag
 tomorrow's prediction with it, and the median ignores an outlier that a mean
 would chase. Until any arrival has been observed it falls back to the
 district's scheduled stop time. The `prediction_source`, `samples` and

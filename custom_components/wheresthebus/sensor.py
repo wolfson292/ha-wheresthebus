@@ -22,6 +22,7 @@ from . import WheresTheBusConfigEntry
 from .const import (
     ATTR_BUS_NUMBER,
     ATTR_OUTLIERS_EXCLUDED,
+    ATTR_PREDICTION_BASIS,
     ATTR_PREDICTION_SOURCE,
     ATTR_RAW_STATUS,
     ATTR_RUN,
@@ -267,6 +268,7 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
         return {
             ATTR_RUN: prediction.run,
             ATTR_PREDICTION_SOURCE: prediction.source,
+            ATTR_PREDICTION_BASIS: prediction.basis,
             ATTR_SAMPLES: prediction.samples,
             ATTR_SPREAD_MINUTES: prediction.spread,
             ATTR_OUTLIERS_EXCLUDED: prediction.outliers,
