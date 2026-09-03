@@ -104,11 +104,25 @@ ARRIVAL_HISTORY_LIMIT: Final = 30
 OUTLIER_MAD_MULTIPLIER: Final = 4.45
 OUTLIER_FLOOR_MINUTES: Final = 12
 
+# Once the bus is this close the run is under way, and how long the last leg
+# takes is far steadier than what time the bus set off.  Measured over four
+# mornings, the clock time of arrival varied by 8 minutes while the time from
+# this distance to the stop varied by 2.5 — so once the bus crosses it, the
+# estimate re-anchors to "crossed at + typical last leg" and stops relying on
+# what time it arrived on previous days.
+APPROACH_ANCHOR_MILES: Final = 1.0
+APPROACH_ANCHOR_KM: Final = 1.6
+
+# How the estimate was reached, reported alongside prediction_source.
+BASIS_APPROACH: Final = "approach"
+BASIS_HISTORICAL: Final = "historical"
+
 ATTR_RUN: Final = "run"
 ATTR_PREDICTION_SOURCE: Final = "prediction_source"
 ATTR_SAMPLES: Final = "samples"
 ATTR_SPREAD_MINUTES: Final = "spread_minutes"
 ATTR_OUTLIERS_EXCLUDED: Final = "outliers_excluded"
+ATTR_PREDICTION_BASIS: Final = "prediction_basis"
 ATTR_SCHEDULED: Final = "scheduled"
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"
