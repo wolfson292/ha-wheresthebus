@@ -110,6 +110,10 @@ OUTLIER_FLOOR_MINUTES: Final = 12
 # this distance to the stop varied by 2.5 — so once the bus crosses it, the
 # estimate re-anchors to "crossed at + typical last leg" and stops relying on
 # what time it arrived on previous days.
+# How far back to replay recorder history when an arrival has no recorded
+# final leg yet. The recorder's own retention caps this in practice.
+BACKFILL_DAYS: Final = 14
+
 APPROACH_ANCHOR_MILES: Final = 1.0
 APPROACH_ANCHOR_KM: Final = 1.6
 
