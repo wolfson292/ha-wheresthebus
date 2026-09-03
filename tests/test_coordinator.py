@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from homeassistant.core import State
 from homeassistant.util import dt as dt_util
 
 from custom_components.wheresthebus.const import (
@@ -22,6 +23,7 @@ from custom_components.wheresthebus.const import (
 from custom_components.wheresthebus.coordinator import (
     RunArrival,
     ScanEvent,
+    Student,
     _attach_scans,
     _pair_riders,
     _reject_outliers,
@@ -29,6 +31,7 @@ from custom_components.wheresthebus.coordinator import (
     classify_scans,
     parse_bus_status,
     parse_stop_time,
+    reconstruct_arrivals,
     run_window,
 )
 
@@ -346,3 +349,94 @@ def test_reject_outliers_never_discards_everything() -> None:
 
     assert kept
     assert excluded < len(times)
+
+
+def _reading(when: datetime, value: str) -> State:
+    """Build a recorded distance reading."""
+    return State("sensor.x_distance_to_stop", value, last_updated=when)
+
+
+def _local(hour: int, minute: int, second: int = 0, day: int = 3) -> datetime:
+    """Return a local wall-clock time on a school morning."""
+    return datetime(
+        2026, 9, day, hour, minute, second, tzinfo=dt_util.get_default_time_zone()
+    )
+
+
+def _rider() -> Student:
+    """Return a rider scheduled for a 07:56 pickup and 17:48 drop-off."""
+    return Student(
+        child_id=1,
+        name="Rider",
+        am_scheduled=parse_stop_time("7:56 A.M."),
+        pm_scheduled=parse_stop_time("5:48 P.M."),
+    )
+
+
+def test_reconstruct_arrivals_recovers_a_morning_from_history() -> None:
+    """Replays 3 Sep: a mile out at 07:52, at the stop at 07:56."""
+    states = [
+        _reading(_local(7, 48), "2.9"),
+        _reading(_local(7, 52, 47), "0.9"),
+        _reading(_local(7, 54), "0.5"),
+        _reading(_local(7, 56, 47), "0.0"),
+        _reading(_local(8, 4), "1.3"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+
+    assert len(arrivals) == 1
+    assert arrivals[0].run == "am"
+    assert dt_util.as_local(arrivals[0].arrival).strftime("%H:%M:%S") == "07:56:47"
+    # 07:52:47 to 07:56:47 — the final leg, which is the point of the exercise.
+    assert arrivals[0].approach_seconds == 240
+
+
+def test_reconstruct_arrivals_ignores_the_early_decoy_pass() -> None:
+    """A pass at 06:13 is a different route and must not become an arrival."""
+    states = [
+        _reading(_local(6, 13), "0.0"),
+        _reading(_local(6, 20), "3.0"),
+    ]
+
+    assert reconstruct_arrivals(states, _rider(), 0.3, 1.0) == []
+
+
+def test_reconstruct_arrivals_ignores_a_run_that_never_reached_the_stop() -> None:
+    """Half a mile out is not an arrival, however close it looks."""
+    states = [
+        _reading(_local(7, 50), "1.4"),
+        _reading(_local(7, 56), "0.5"),
+        _reading(_local(8, 2), "2.0"),
+    ]
+
+    assert reconstruct_arrivals(states, _rider(), 0.3, 1.0) == []
+
+
+def test_reconstruct_arrivals_skips_unparseable_readings() -> None:
+    """Unavailable and unknown rows are gaps, not distances."""
+    states = [
+        _reading(_local(7, 50), "unavailable"),
+        _reading(_local(7, 52, 47), "0.9"),
+        _reading(_local(7, 54), "unknown"),
+        _reading(_local(7, 56, 47), "0.0"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+
+    assert len(arrivals) == 1
+    assert arrivals[0].approach_seconds == 240
+
+
+def test_reconstruct_arrivals_separates_the_two_daily_runs() -> None:
+    """Morning and afternoon are learned independently."""
+    states = [
+        _reading(_local(7, 52), "0.9"),
+        _reading(_local(7, 56), "0.0"),
+        _reading(_local(17, 25), "0.8"),
+        _reading(_local(17, 30), "0.0"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+
+    assert [item.run for item in arrivals] == ["am", "pm"]

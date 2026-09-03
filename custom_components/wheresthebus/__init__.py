@@ -74,6 +74,9 @@ async def async_setup_entry(
     )
     await buses.async_load_arrivals()
     await buses.async_config_entry_first_refresh()
+    # The distance sensor has been recording all along, so past arrivals can be
+    # recovered rather than waiting a week to relearn them.
+    await buses.async_backfill_arrivals()
 
     entry.runtime_data = WheresTheBusData(api=api, students=students, buses=buses)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

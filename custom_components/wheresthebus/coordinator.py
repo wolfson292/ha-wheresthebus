@@ -10,13 +10,14 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
+from .backfill import async_distance_history, distance_entity_id
 from .const import (
     APPROACH_ANCHOR_KM,
     APPROACH_ANCHOR_MILES,
@@ -225,6 +226,61 @@ def classify_scans(scans: list[ScanEvent], school_name: str | None) -> list[Scan
             scan.kind = SCAN_PICKUP if index % 2 == 0 else SCAN_DROPOFF
 
     return sorted(scans, key=lambda item: item.timestamp)
+
+
+def reconstruct_arrivals(
+    states: list[State],
+    student: Student,
+    arrival_threshold: float,
+    anchor_threshold: float,
+) -> list[RunArrival]:
+    """Find each run's arrival in a stretch of recorded distance readings.
+
+    Applies exactly the filters the live path applies: the closest approach
+    inside a run's window is that run's arrival, provided it actually reached
+    the stop. The first reading inside the anchor gives the final leg.
+    """
+    best: dict[tuple[date, str], tuple[float, datetime]] = {}
+    anchor: dict[tuple[date, str], datetime] = {}
+
+    for state in states:
+        try:
+            distance = float(state.state)
+        except (TypeError, ValueError):
+            continue
+
+        when = state.last_updated
+        local = dt_util.as_local(when)
+        for run, scheduled in (
+            (RUN_AM, student.am_scheduled),
+            (RUN_PM, student.pm_scheduled),
+        ):
+            window = run_window(scheduled, when)
+            if window is None or not window[0] <= local <= window[1]:
+                continue
+            key = (local.date(), run)
+            current = best.get(key)
+            if current is None or distance < current[0]:
+                best[key] = (distance, when)
+            if distance <= anchor_threshold and key not in anchor:
+                anchor[key] = when
+
+    arrivals: list[RunArrival] = []
+    for (day, run), (closest, when) in best.items():
+        if closest > arrival_threshold:
+            continue
+        crossed = anchor.get((day, run))
+        approach = (
+            int((when - crossed).total_seconds())
+            if crossed is not None and crossed <= when
+            else None
+        )
+        arrivals.append(
+            RunArrival(
+                run=run, arrival=when, closest=closest, approach_seconds=approach
+            )
+        )
+    return sorted(arrivals, key=lambda item: item.arrival)
 
 
 class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
@@ -685,6 +741,61 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             changed = True
 
         return changed
+
+    async def async_backfill_arrivals(self) -> None:
+        """Recover past arrivals from the recorder, once.
+
+        Skipped as soon as any run has a recorded final leg, so this costs one
+        history query on the first start after upgrading and nothing after.
+        """
+        if any(
+            item.approach_seconds is not None
+            for arrivals in self._arrivals.values()
+            for item in arrivals
+        ):
+            return
+
+        students = self.students.data or {}
+        if not students:
+            return
+
+        recovered: dict[int, list[RunArrival]] = {}
+        for child_id, student in students.items():
+            entity_id = distance_entity_id(self.hass, child_id)
+            if entity_id is None:
+                continue
+            try:
+                rows = await async_distance_history(self.hass, entity_id)
+            except Exception:
+                _LOGGER.exception(
+                    "Could not read %s history from the recorder", entity_id
+                )
+                continue
+            arrivals = reconstruct_arrivals(
+                rows, student, self._arrival_threshold, self._anchor_threshold
+            )
+            if arrivals:
+                recovered[child_id] = arrivals
+                _LOGGER.info(
+                    "Recovered %d past arrival(s) for %s from the recorder",
+                    len(arrivals),
+                    entity_id,
+                )
+
+        changed = False
+        for child_id, arrivals in recovered.items():
+            known = {item.arrival for item in self._arrivals.get(child_id, [])}
+            fresh = [item for item in arrivals if item.arrival not in known]
+            if not fresh:
+                continue
+            history = self._arrivals.setdefault(child_id, [])
+            history.extend(fresh)
+            history.sort(key=lambda item: item.arrival)
+            self._arrivals[child_id] = _trim_per_run(history)
+            changed = True
+
+        if changed:
+            await self._async_save_arrivals()
 
     async def async_load_arrivals(self) -> None:
         """Restore observed arrivals saved by a previous run."""

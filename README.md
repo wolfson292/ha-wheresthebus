@@ -56,6 +56,15 @@ of arrival varied by 8 minutes while the final leg varied by 2.5, so a bus
 that sets off early is reported early instead of being averaged back towards
 its usual time. The `prediction_basis` attribute says which is in use.
 
+On first start after upgrading, past arrivals are **recovered from Home
+Assistant's own recorder** rather than relearned: the distance sensor has been
+writing every position all along, and each arrival is plainly visible in it as
+a dip towards zero inside a run's window. The same distance and window filters
+are applied as on the live path, so nothing is learned from history that would
+not have been learned live. This runs once, is skipped as soon as any final
+leg has been recorded, and is silently skipped entirely where the recorder is
+not enabled.
+
 The historical part is the median of **every retained arrival** for that run,
 not the most recent one — a single bus stuck behind a train should not drag
 tomorrow's prediction with it, and the median ignores an outlier that a mean
