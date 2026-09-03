@@ -531,3 +531,81 @@ async def test_prediction_uses_clock_history_before_the_bus_is_close(
     assert prediction is not None
     assert prediction.basis == "historical"
     assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "08:01"
+
+
+async def test_history_is_replayed_again_when_the_scheme_widens(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Arrivals recorded under a narrower scheme are replayed, not kept as-is.
+
+    1.7.0 widened one anchor into a four-rung ladder. Skipping the replay
+    merely because some final leg exists would have left that history holding
+    only the old single rung, and the ladder would have behaved exactly as its
+    predecessor did — the bug it was written to fix.
+    """
+    mock_config_entry.add_to_hass(hass)
+    key = f"wheresthebus_arrivals.{mock_config_entry.entry_id}"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        # No "schema", and one rung: exactly what 1.6.0 wrote.
+        "data": {
+            "12345678": [
+                {
+                    "run": "am",
+                    "at": "2026-09-01T12:01:27+00:00",
+                    "closest": 0.0,
+                    "legs": {"2": 240},
+                }
+            ]
+        },
+    }
+
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    # The replay ran and stamped the current scheme, so it will not run again.
+    assert hass_storage[key]["data"]["schema"] == 2
+    assert "riders" in hass_storage[key]["data"]
+
+
+async def test_history_is_not_replayed_twice(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """History already captured under the current scheme is left alone."""
+    mock_config_entry.add_to_hass(hass)
+    key = f"wheresthebus_arrivals.{mock_config_entry.entry_id}"
+    stored = {
+        "schema": 2,
+        "riders": {
+            "12345678": [
+                {
+                    "run": "am",
+                    "at": "2026-09-01T12:01:27+00:00",
+                    "closest": 0.0,
+                    "legs": {"0": 600, "1": 360, "2": 240, "3": 60},
+                }
+            ]
+        },
+    }
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": stored,
+    }
+
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    rider = hass_storage[key]["data"]["riders"]["12345678"]
+    assert rider[0]["legs"] == {"0": 600, "1": 360, "2": 240, "3": 60}
