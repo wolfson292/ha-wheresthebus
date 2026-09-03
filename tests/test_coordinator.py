@@ -351,6 +351,9 @@ def test_reject_outliers_never_discards_everything() -> None:
     assert excluded < len(times)
 
 
+LADDER = (3.0, 2.0, 1.0, 0.5)
+
+
 def _reading(when: datetime, value: str) -> State:
     """Build a recorded distance reading."""
     return State("sensor.x_distance_to_stop", value, last_updated=when)
@@ -383,13 +386,14 @@ def test_reconstruct_arrivals_recovers_a_morning_from_history() -> None:
         _reading(_local(8, 4), "1.3"),
     ]
 
-    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
 
     assert len(arrivals) == 1
     assert arrivals[0].run == "am"
     assert dt_util.as_local(arrivals[0].arrival).strftime("%H:%M:%S") == "07:56:47"
     # 07:52:47 to 07:56:47 — the final leg, which is the point of the exercise.
-    assert arrivals[0].approach_seconds == 240
+    # Rung 2 is the 1.0 mile anchor: 07:52:47 to 07:56:47.
+    assert arrivals[0].legs[2] == 240
 
 
 def test_reconstruct_arrivals_ignores_the_early_decoy_pass() -> None:
@@ -399,7 +403,7 @@ def test_reconstruct_arrivals_ignores_the_early_decoy_pass() -> None:
         _reading(_local(6, 20), "3.0"),
     ]
 
-    assert reconstruct_arrivals(states, _rider(), 0.3, 1.0) == []
+    assert reconstruct_arrivals(states, _rider(), 0.3, LADDER) == []
 
 
 def test_reconstruct_arrivals_ignores_a_run_that_never_reached_the_stop() -> None:
@@ -410,7 +414,7 @@ def test_reconstruct_arrivals_ignores_a_run_that_never_reached_the_stop() -> Non
         _reading(_local(8, 2), "2.0"),
     ]
 
-    assert reconstruct_arrivals(states, _rider(), 0.3, 1.0) == []
+    assert reconstruct_arrivals(states, _rider(), 0.3, LADDER) == []
 
 
 def test_reconstruct_arrivals_skips_unparseable_readings() -> None:
@@ -422,10 +426,11 @@ def test_reconstruct_arrivals_skips_unparseable_readings() -> None:
         _reading(_local(7, 56, 47), "0.0"),
     ]
 
-    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
 
     assert len(arrivals) == 1
-    assert arrivals[0].approach_seconds == 240
+    # Rung 2 is the 1.0 mile anchor: 07:52:47 to 07:56:47.
+    assert arrivals[0].legs[2] == 240
 
 
 def test_reconstruct_arrivals_separates_the_two_daily_runs() -> None:
@@ -437,6 +442,42 @@ def test_reconstruct_arrivals_separates_the_two_daily_runs() -> None:
         _reading(_local(17, 30), "0.0"),
     ]
 
-    arrivals = reconstruct_arrivals(states, _rider(), 0.3, 1.0)
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
 
     assert [item.run for item in arrivals] == ["am", "pm"]
+
+
+def test_reconstruct_arrivals_records_every_rung_crossed() -> None:
+    """Each anchor the bus passes gets its own final-leg duration.
+
+    One anchor at a mile left everything further out running on the clock
+    median: on 3 Sep the bus was 2.2 miles out and six minutes away while the
+    estimate still said fifteen.
+    """
+    states = [
+        _reading(_local(7, 46, 47), "3.0"),
+        _reading(_local(7, 50, 47), "2.0"),
+        _reading(_local(7, 52, 47), "1.0"),
+        _reading(_local(7, 55, 47), "0.5"),
+        _reading(_local(7, 56, 47), "0.0"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    assert len(arrivals) == 1
+    # Ten minutes out at three miles, one minute out at half a mile.
+    assert arrivals[0].legs == {0: 600, 1: 360, 2: 240, 3: 60}
+
+
+def test_reconstruct_arrivals_records_only_rungs_actually_crossed() -> None:
+    """A bus first seen close by has no reading at the outer rungs."""
+    states = [
+        _reading(_local(7, 55, 47), "0.5"),
+        _reading(_local(7, 56, 47), "0.0"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    # 0.5 is inside every rung, so all of them are crossed at that moment.
+    assert set(arrivals[0].legs) == {0, 1, 2, 3}
+    assert arrivals[0].legs[3] == 60

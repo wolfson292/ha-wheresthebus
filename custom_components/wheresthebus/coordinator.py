@@ -19,8 +19,8 @@ from homeassistant.util import dt as dt_util
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .backfill import async_distance_history, distance_entity_id
 from .const import (
-    APPROACH_ANCHOR_KM,
-    APPROACH_ANCHOR_MILES,
+    ANCHOR_LADDER_KM,
+    ANCHOR_LADDER_MILES,
     ARRIVAL_HISTORY_LIMIT,
     ARRIVAL_STORAGE_KEY,
     ARRIVAL_STORAGE_VERSION,
@@ -95,10 +95,10 @@ class RunArrival:
     run: str
     arrival: datetime
     closest: float
-    # Seconds from crossing the approach anchor to reaching the stop. None for
-    # arrivals recorded before this was tracked, or where the bus was already
-    # inside the anchor when the window opened.
-    approach_seconds: int | None = None
+    # Seconds from crossing each anchor rung to reaching the stop, keyed by
+    # rung index. Empty for arrivals recorded before this was tracked, or
+    # where the bus was already inside every rung when the window opened.
+    legs: dict[int, int] = field(default_factory=dict)
 
 
 def run_window(
@@ -232,7 +232,7 @@ def reconstruct_arrivals(
     states: list[State],
     student: Student,
     arrival_threshold: float,
-    anchor_threshold: float,
+    ladder: tuple[float, ...],
 ) -> list[RunArrival]:
     """Find each run's arrival in a stretch of recorded distance readings.
 
@@ -241,7 +241,7 @@ def reconstruct_arrivals(
     the stop. The first reading inside the anchor gives the final leg.
     """
     best: dict[tuple[date, str], tuple[float, datetime]] = {}
-    anchor: dict[tuple[date, str], datetime] = {}
+    anchor: dict[tuple[date, str], dict[int, datetime]] = {}
 
     for state in states:
         try:
@@ -262,24 +262,21 @@ def reconstruct_arrivals(
             current = best.get(key)
             if current is None or distance < current[0]:
                 best[key] = (distance, when)
-            if distance <= anchor_threshold and key not in anchor:
-                anchor[key] = when
+            crossings = anchor.setdefault(key, {})
+            for rung, threshold in enumerate(ladder):
+                if distance <= threshold and rung not in crossings:
+                    crossings[rung] = when
 
     arrivals: list[RunArrival] = []
     for (day, run), (closest, when) in best.items():
         if closest > arrival_threshold:
             continue
-        crossed = anchor.get((day, run))
-        approach = (
-            int((when - crossed).total_seconds())
-            if crossed is not None and crossed <= when
-            else None
-        )
-        arrivals.append(
-            RunArrival(
-                run=run, arrival=when, closest=closest, approach_seconds=approach
-            )
-        )
+        legs = {
+            rung: int((when - crossed).total_seconds())
+            for rung, crossed in anchor.get((day, run), {}).items()
+            if crossed <= when
+        }
+        arrivals.append(RunArrival(run=run, arrival=when, closest=closest, legs=legs))
     return sorted(arrivals, key=lambda item: item.arrival)
 
 
@@ -394,6 +391,22 @@ class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
             await self._async_save_history()
 
         return students
+
+
+def _load_legs(item: dict[str, Any]) -> dict[int, int]:
+    """Read stored final-leg durations, accepting the older single-anchor form."""
+    raw = item.get("legs")
+    if isinstance(raw, dict):
+        legs: dict[int, int] = {}
+        for key, value in raw.items():
+            try:
+                legs[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return legs
+    # Pre-ladder records held one duration, measured at what is now rung 2.
+    single = item.get("approach")
+    return {2: int(single)} if isinstance(single, int) else {}
 
 
 def _median(values: list[int]) -> int:
@@ -616,7 +629,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
         # (child_id, run, local date) -> when the bus first came inside the
         # approach anchor for that run.
-        self._anchor: dict[tuple[int, str, date], datetime] = {}
+        self._anchor: dict[tuple[int, str, date], dict[int, datetime]] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -654,9 +667,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     # ------------------------------------------------------------------
 
     @property
-    def _anchor_threshold(self) -> float:
-        """Return the approach anchor distance in the account's units."""
-        return APPROACH_ANCHOR_KM if self.distance_in_km else APPROACH_ANCHOR_MILES
+    def _ladder(self) -> tuple[float, ...]:
+        """Return the anchor rungs, loosest first, in the account's units."""
+        return ANCHOR_LADDER_KM if self.distance_in_km else ANCHOR_LADDER_MILES
 
     @property
     def _arrival_threshold(self) -> float:
@@ -684,8 +697,10 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             best = self._pending.get(key)
             if best is None or distance < best[0]:
                 self._pending[key] = (distance, now)
-            if distance <= self._anchor_threshold and key not in self._anchor:
-                self._anchor[key] = now
+            crossings = self._anchor.setdefault(key, {})
+            for rung, threshold in enumerate(self._ladder):
+                if distance <= threshold and rung not in crossings:
+                    crossings[rung] = now
 
     def _promote_pending(self) -> bool:
         """Turn closed windows into arrivals. Returns True if anything changed."""
@@ -724,17 +739,15 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 )
                 continue
 
-            crossed = self._anchor.pop(key, None)
-            approach = (
-                int((when - crossed).total_seconds())
-                if crossed is not None and crossed <= when
-                else None
-            )
+            crossings = self._anchor.pop(key, {})
+            legs = {
+                rung: int((when - crossed).total_seconds())
+                for rung, crossed in crossings.items()
+                if crossed <= when
+            }
             history = self._arrivals.setdefault(child_id, [])
             history.append(
-                RunArrival(
-                    run=run, arrival=when, closest=closest, approach_seconds=approach
-                )
+                RunArrival(run=run, arrival=when, closest=closest, legs=legs)
             )
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
@@ -748,11 +761,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         Skipped as soon as any run has a recorded final leg, so this costs one
         history query on the first start after upgrading and nothing after.
         """
-        if any(
-            item.approach_seconds is not None
-            for arrivals in self._arrivals.values()
-            for item in arrivals
-        ):
+        if any(item.legs for arrivals in self._arrivals.values() for item in arrivals):
             return
 
         students = self.students.data or {}
@@ -772,7 +781,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 )
                 continue
             arrivals = reconstruct_arrivals(
-                rows, student, self._arrival_threshold, self._anchor_threshold
+                rows, student, self._arrival_threshold, self._ladder
             )
             if arrivals:
                 recovered[child_id] = arrivals
@@ -810,7 +819,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     run=item["run"],
                     arrival=parsed,
                     closest=float(item.get("closest", 0.0)),
-                    approach_seconds=item.get("approach"),
+                    legs=_load_legs(item),
                 )
                 for item in arrivals
                 if item.get("run") in (RUN_AM, RUN_PM)
@@ -828,7 +837,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                         "run": item.run,
                         "at": item.arrival.isoformat(),
                         "closest": item.closest,
-                        "approach": item.approach_seconds,
+                        "legs": {str(k): v for k, v in item.legs.items()},
                     }
                     for item in arrivals
                 ]
@@ -913,19 +922,24 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         the typical final leg, so an early bus is reported early instead of
         being averaged back towards the usual clock time.
         """
-        crossed = self._anchor.get((child_id, run, local_now.date()))
-        if crossed is None:
+        crossings = self._anchor.get((child_id, run, local_now.date()))
+        if not crossings:
             return None
 
-        legs = sorted(
-            item.approach_seconds
-            for item in self._arrivals.get(child_id, [])
-            if item.run == run and item.approach_seconds is not None
-        )
-        if not legs:
+        # Tightest rung first: the closer the bus was when it crossed, the less
+        # of the journey is left to vary.
+        for rung in sorted(crossings, reverse=True):
+            legs = sorted(
+                item.legs[rung]
+                for item in self._arrivals.get(child_id, [])
+                if item.run == run and rung in item.legs
+            )
+            if legs:
+                break
+        else:
             return None
 
-        estimate = dt_util.as_local(crossed) + timedelta(seconds=legs[len(legs) // 2])
+        estimate = dt_util.as_local(crossings[rung]) + timedelta(seconds=_median(legs))
         # A bus already overdue against this estimate has arrived, or is about
         # to; leave it be rather than reporting a time in the past.
         return estimate if estimate > local_now else None
