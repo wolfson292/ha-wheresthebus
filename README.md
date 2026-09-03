@@ -48,9 +48,12 @@ would rewrite itself on every poll, and Home Assistant renders a timestamp as
 relative time anyway. It also means alerting automations are plain `time`
 triggers with a negative offset — no templates.
 
-Once the bus is within a mile of the stop the estimate **re-anchors to the
-live approach**: the moment it crossed that mile, plus the typical time the
-final leg takes. Before that it is the median of previously observed arrival
+As the bus closes in, the estimate **re-anchors to the live approach**. Each
+arrival records how long the rest of the journey took from 3, 2, 1 and 0.5
+miles out, and the estimate uses the tightest of those the bus has already
+crossed today — the moment it crossed, plus the typical remaining time. So it
+tightens as the bus approaches rather than ignoring its position until one
+fixed threshold is met. Before that it is the median of previously observed arrival
 times. The distinction matters — measured over four mornings the clock time
 of arrival varied by 8 minutes while the final leg varied by 2.5, so a bus
 that sets off early is reported early instead of being averaged back towards

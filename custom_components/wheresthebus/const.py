@@ -114,10 +114,17 @@ OUTLIER_FLOOR_MINUTES: Final = 12
 # final leg yet. The recorder's own retention caps this in practice.
 BACKFILL_DAYS: Final = 14
 
-APPROACH_ANCHOR_MILES: Final = 1.0
-APPROACH_ANCHOR_KM: Final = 1.6
+# A ladder of anchors, not one. Each rung records how long the rest of the
+# journey took from that distance, and the estimate re-anchors to the tightest
+# rung the bus has crossed — so it tightens as the bus closes in, instead of
+# ignoring the live position until one fixed threshold is met.
+#
+# A single 1.0 mile anchor left everything above it running on the clock
+# median: on 3 Sep the bus was 2.2 miles out and 6 minutes away while the
+# estimate still said 15.
+ANCHOR_LADDER_MILES: Final = (3.0, 2.0, 1.0, 0.5)
+ANCHOR_LADDER_KM: Final = (4.8, 3.2, 1.6, 0.8)
 
-# How the estimate was reached, reported alongside prediction_source.
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 
