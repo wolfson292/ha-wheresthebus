@@ -122,6 +122,13 @@ BACKFILL_DAYS: Final = 14
 # A single 1.0 mile anchor left everything above it running on the clock
 # median: on 3 Sep the bus was 2.2 miles out and 6 minutes away while the
 # estimate still said 15.
+# Bumped whenever what is recorded per arrival changes shape. Stored history
+# from an older schema is replayed from the recorder again, because arrivals
+# learned under a narrower scheme are not wrong so much as incomplete —
+# 1.7.0 shipped a four-rung ladder that would otherwise have sat with only
+# the one rung its predecessor recorded, and behaved exactly as before.
+ARRIVAL_SCHEMA: Final = 2
+
 ANCHOR_LADDER_MILES: Final = (3.0, 2.0, 1.0, 0.5)
 ANCHOR_LADDER_KM: Final = (4.8, 3.2, 1.6, 0.8)
 

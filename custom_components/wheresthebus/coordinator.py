@@ -22,6 +22,7 @@ from .const import (
     ANCHOR_LADDER_KM,
     ANCHOR_LADDER_MILES,
     ARRIVAL_HISTORY_LIMIT,
+    ARRIVAL_SCHEMA,
     ARRIVAL_STORAGE_KEY,
     ARRIVAL_STORAGE_VERSION,
     ARRIVAL_THRESHOLD_KM,
@@ -625,6 +626,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             f"{ARRIVAL_STORAGE_KEY}.{config_entry.entry_id}",
         )
         self._arrivals: dict[int, list[RunArrival]] = {}
+        # Which recording scheme the stored arrivals were captured under.
+        self._schema = 0
         # (child_id, run, local date) -> closest approach seen so far.
         self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
         # (child_id, run, local date) -> when the bus first came inside the
@@ -751,17 +754,22 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             )
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
-            changed = True
 
         return changed
 
     async def async_backfill_arrivals(self) -> None:
         """Recover past arrivals from the recorder, once.
 
-        Skipped as soon as any run has a recorded final leg, so this costs one
-        history query on the first start after upgrading and nothing after.
+        Skipped once the stored history was captured under the current
+        recording scheme. Checking merely that some final leg exists is not
+        enough: 1.7.0 widened one anchor into a four-rung ladder, and history
+        holding only the old single rung would have been left as it was and
+        behaved exactly as its predecessor did.
         """
-        if any(item.legs for arrivals in self._arrivals.values() for item in arrivals):
+        complete = self._schema >= ARRIVAL_SCHEMA and any(
+            item.legs for arrivals in self._arrivals.values() for item in arrivals
+        )
+        if complete:
             return
 
         students = self.students.data or {}
@@ -791,7 +799,6 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     entity_id,
                 )
 
-        changed = False
         for child_id, arrivals in recovered.items():
             known = {item.arrival for item in self._arrivals.get(child_id, [])}
             fresh = [item for item in arrivals if item.arrival not in known]
@@ -801,14 +808,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             history.extend(fresh)
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
-            changed = True
 
-        if changed:
-            await self._async_save_arrivals()
+        # Recorded even when nothing new was found, so an instance whose
+        # recorder has no history left does not replay on every restart.
+        self._schema = ARRIVAL_SCHEMA
+        await self._async_save_arrivals()
 
     async def async_load_arrivals(self) -> None:
         """Restore observed arrivals saved by a previous run."""
         stored = await self._store.async_load() or {}
+        # Older stores were a bare rider mapping, with no schema recorded.
+        if "riders" in stored:
+            self._schema = int(stored.get("schema") or 0)
+            stored = stored.get("riders") or {}
         for raw_child_id, arrivals in stored.items():
             try:
                 child_id = int(raw_child_id)
@@ -832,16 +844,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         """Persist observed arrivals."""
         await self._store.async_save(
             {
-                str(child_id): [
-                    {
-                        "run": item.run,
-                        "at": item.arrival.isoformat(),
-                        "closest": item.closest,
-                        "legs": {str(k): v for k, v in item.legs.items()},
-                    }
-                    for item in arrivals
-                ]
-                for child_id, arrivals in self._arrivals.items()
+                "schema": self._schema,
+                "riders": {
+                    str(child_id): [
+                        {
+                            "run": item.run,
+                            "at": item.arrival.isoformat(),
+                            "closest": item.closest,
+                            "legs": {str(k): v for k, v in item.legs.items()},
+                        }
+                        for item in arrivals
+                    ]
+                    for child_id, arrivals in self._arrivals.items()
+                },
             }
         )
 
