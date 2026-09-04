@@ -17,6 +17,7 @@ from homeassistant.components.sensor import (
 from homeassistant.const import EntityCategory, UnitOfLength, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import WheresTheBusConfigEntry
 from .const import (
@@ -25,6 +26,7 @@ from .const import (
     ATTR_PREDICTION_BASIS,
     ATTR_PREDICTION_SOURCE,
     ATTR_RAW_STATUS,
+    ATTR_RIDE_MINUTES,
     ATTR_RUN,
     ATTR_SAMPLES,
     ATTR_SCAN_LOCATION,
@@ -44,6 +46,7 @@ from .coordinator import (
     WheresTheBusBusCoordinator,
     WheresTheBusStudentCoordinator,
     parse_bus_status,
+    predict_school_arrival,
 )
 from .entity import WheresTheBusEntity
 
@@ -183,6 +186,7 @@ async def async_setup_entry(
             WheresTheBusBusSensor(data.buses, data.students, child_id, description)
             for description in BUS_SENSORS
         )
+        entities.append(WheresTheBusSchoolArrivalSensor(data.students, child_id))
         entities.extend(
             WheresTheBusStudentSensor(data.students, child_id, description)
             for description in STUDENT_SENSORS
@@ -273,6 +277,51 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             ATTR_SPREAD_MINUTES: prediction.spread,
             ATTR_OUTLIERS_EXCLUDED: prediction.outliers,
             ATTR_SCHEDULED: prediction.scheduled.strftime("%H:%M"),
+        }
+
+
+class WheresTheBusSchoolArrivalSensor(WheresTheBusEntity, SensorEntity):
+    """When the morning ride is expected to reach school.
+
+    Learned from the drop-off scans the school records, so the ride to school
+    gets a real destination time rather than only a stopwatch since boarding.
+    """
+
+    coordinator: WheresTheBusStudentCoordinator
+    _attr_translation_key = "school_arrival"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:school-outline"
+
+    def __init__(
+        self,
+        coordinator: WheresTheBusStudentCoordinator,
+        child_id: int,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(coordinator, coordinator, child_id, "school_arrival")
+
+    def _predict(self) -> Any:
+        """Return the prediction, or None when nothing has been observed."""
+        student = self.student
+        if student is None:
+            return None
+        return predict_school_arrival(student, dt_util.as_local(dt_util.utcnow()))
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the predicted arrival at school."""
+        prediction = self._predict()
+        return prediction.arrival if prediction else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return how well informed the guess is, and the typical ride."""
+        prediction = self._predict()
+        if prediction is None:
+            return None
+        return {
+            ATTR_SAMPLES: prediction.samples,
+            ATTR_RIDE_MINUTES: prediction.ride_minutes,
         }
 
 

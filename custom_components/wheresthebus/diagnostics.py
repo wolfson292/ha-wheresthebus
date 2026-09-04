@@ -56,6 +56,7 @@ async def async_get_config_entry_diagnostics(
             "distance_in_km": data.buses.distance_in_km,
             "students": students,
             "buses": buses,
+            "arrivals": data.buses.arrival_diagnostics(),
         },
         TO_REDACT,
     )

@@ -18,6 +18,7 @@ One device per rider on your account, with these entities:
 | `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
 | `sensor.<rider>_gps_age` | Age of the last GPS fix in minutes (diagnostic). |
 | `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop. |
+| `sensor.<rider>_school_arrival` | When the morning ride is expected to reach school. |
 | `sensor.<rider>_eta` | The app's ETA message, when the district publishes one. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
 | `sensor.<rider>_last_pickup` | Timestamp the rider was last picked up. |
@@ -88,6 +89,14 @@ Two things make the observations trustworthy:
   than useless.
 - **The bus must actually reach the stop** (within 0.3 mi). On a run where
   nobody boards, the route can stay half a mile out; that is not an arrival.
+
+### The ride to school
+
+`school_arrival` predicts when the morning ride reaches school, learned from
+the drop-off scans the school itself records — the same median and outlier
+rejection used for stop arrivals. Its `typical_ride_minutes` attribute is the
+median pickup-to-drop-off time, which is what lets a Live Activity fill a
+progress bar across the ride rather than only counting elapsed time.
 
 ### Scan history is remembered
 

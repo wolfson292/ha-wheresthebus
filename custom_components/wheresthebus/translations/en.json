@@ -53,6 +53,9 @@
       "next_arrival": {
         "name": "Next arrival"
       },
+      "school_arrival": {
+        "name": "School arrival"
+      },
       "distance_to_stop": {
         "name": "Distance to stop"
       },

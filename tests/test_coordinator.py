@@ -31,6 +31,7 @@ from custom_components.wheresthebus.coordinator import (
     classify_scans,
     parse_bus_status,
     parse_stop_time,
+    predict_school_arrival,
     reconstruct_arrivals,
     run_window,
 )
@@ -481,3 +482,59 @@ def test_reconstruct_arrivals_records_only_rungs_actually_crossed() -> None:
     # 0.5 is inside every rung, so all of them are crossed at that moment.
     assert set(arrivals[0].legs) == {0, 1, 2, 3}
     assert arrivals[0].legs[3] == 60
+
+
+def _scan(when: datetime, kind: str) -> ScanEvent:
+    """Build a classified scan."""
+    return ScanEvent(
+        timestamp=dt_util.as_utc(when), location="", method="", bus="", kind=kind
+    )
+
+
+def test_predict_school_arrival_learns_from_the_drop_off_scans() -> None:
+    """The school records its own arrivals; the ride does not need timing."""
+    student = _rider()
+    student.scans = [
+        _scan(_local(8, 1, day=1), SCAN_PICKUP),
+        _scan(_local(9, 29, day=1), SCAN_DROPOFF),
+        _scan(_local(8, 3, day=2), SCAN_PICKUP),
+        _scan(_local(9, 31, day=2), SCAN_DROPOFF),
+        _scan(_local(7, 58, day=3), SCAN_PICKUP),
+        _scan(_local(9, 30, day=3), SCAN_DROPOFF),
+    ]
+
+    prediction = predict_school_arrival(student, _local(7, 45, day=4))
+
+    assert prediction is not None
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "09:30"
+    assert prediction.samples == 3
+    # Pickup to drop-off on the same morning, which is what fills the bar.
+    assert prediction.ride_minutes == 88
+
+
+def test_predict_school_arrival_ignores_the_afternoon() -> None:
+    """Afternoon scans belong to the ride home, not the ride to school."""
+    student = _rider()
+    student.scans = [
+        _scan(_local(16, 19, day=1), SCAN_PICKUP),
+        _scan(_local(17, 30, day=1), SCAN_DROPOFF),
+    ]
+
+    assert predict_school_arrival(student, _local(7, 45, day=2)) is None
+
+
+def test_predict_school_arrival_rejects_a_badly_late_morning() -> None:
+    """One morning stuck in traffic must not drag the estimate."""
+    student = _rider()
+    student.scans = [
+        _scan(_local(9, 29, day=1), SCAN_DROPOFF),
+        _scan(_local(9, 30, day=2), SCAN_DROPOFF),
+        _scan(_local(9, 31, day=3), SCAN_DROPOFF),
+        _scan(_local(10, 40, day=4), SCAN_DROPOFF),
+    ]
+
+    prediction = predict_school_arrival(student, _local(7, 45, day=5))
+
+    assert prediction is not None
+    assert prediction.samples == 3
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "09:30"
