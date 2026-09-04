@@ -281,6 +281,61 @@ def reconstruct_arrivals(
     return sorted(arrivals, key=lambda item: item.arrival)
 
 
+@dataclass(slots=True)
+class SchoolArrival:
+    """A predicted arrival at school on the morning run."""
+
+    arrival: datetime
+    samples: int
+    ride_minutes: int | None
+
+
+def predict_school_arrival(
+    student: Student, local_now: datetime
+) -> SchoolArrival | None:
+    """Predict when the morning ride reaches school.
+
+    Learned from the drop-off scans the school itself records, which are
+    already in the scan history — the same median with the same outlier
+    rejection used for stop arrivals, so a morning stuck in traffic does not
+    drag the estimate.
+
+    Also reports the typical ride length, measured pickup to drop-off on the
+    same day, which is what lets a progress bar fill across the journey rather
+    than only counting elapsed time.
+    """
+    arrivals: list[int] = []
+    rides: list[int] = []
+    pickups: dict[date, datetime] = {}
+
+    for scan in student.scans:
+        local = dt_util.as_local(scan.timestamp)
+        if local.hour >= _NOON:
+            continue
+        if scan.kind == SCAN_PICKUP:
+            pickups.setdefault(local.date(), local)
+        elif scan.kind == SCAN_DROPOFF:
+            arrivals.append(local.hour * 60 + local.minute)
+            if (boarded := pickups.get(local.date())) is not None:
+                rides.append(int((local - boarded).total_seconds() // 60))
+
+    if not arrivals:
+        return None
+
+    kept, _ = _reject_outliers(sorted(arrivals))
+    middle = _median(kept)
+    moment = local_now.replace(
+        hour=middle // 60, minute=middle % 60, second=0, microsecond=0
+    )
+    if moment <= local_now:
+        moment += timedelta(days=1)
+
+    ride = _median(sorted(rides)) if rides else None
+    return SchoolArrival(
+        arrival=dt_util.as_utc(moment), samples=len(kept), ride_minutes=ride
+    )
+
+
 class WheresTheBusStudentCoordinator(DataUpdateCoordinator[dict[int, Student]]):
     """Refresh the roster, stop details and ID scan history."""
 
@@ -756,6 +811,47 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             self._arrivals[child_id] = _trim_per_run(history)
 
         return changed
+
+    def arrival_diagnostics(self) -> dict[str, Any]:
+        """Describe what has been learned, for the diagnostics download.
+
+        Which rungs of the ladder actually carry data is the single most
+        useful thing to know when an estimate refuses to re-anchor, and it
+        was invisible from the outside until this existed.
+        """
+        return {
+            "schema": self._schema,
+            "ladder": list(self._ladder),
+            "riders": {
+                str(child_id): {
+                    "arrivals": [
+                        {
+                            "run": item.run,
+                            "at": dt_util.as_local(item.arrival).isoformat(),
+                            "closest": item.closest,
+                            "legs_seconds": dict(sorted(item.legs.items())),
+                        }
+                        for item in arrivals
+                    ],
+                    "rungs_with_data": {
+                        run: sorted(
+                            {
+                                rung
+                                for item in arrivals
+                                if item.run == run
+                                for rung in item.legs
+                            }
+                        )
+                        for run in (RUN_AM, RUN_PM)
+                    },
+                }
+                for child_id, arrivals in self._arrivals.items()
+            },
+            "crossed_today": {
+                f"{child_id}/{run}/{day}": sorted(crossings)
+                for (child_id, run, day), crossings in self._anchor.items()
+            },
+        }
 
     async def async_backfill_arrivals(self) -> None:
         """Recover past arrivals from the recorder, once.

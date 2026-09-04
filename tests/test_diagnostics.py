@@ -47,3 +47,25 @@ async def test_diagnostics_redact_personal_data(
     assert bus["stpLat"] == REDACTED
     # The bus's own position is the point of the integration, so it stays.
     assert bus["busLat"] == 40.73100
+
+
+async def test_diagnostics_expose_the_learned_ladder(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Which rungs carry data must be visible without reading storage.
+
+    An estimate that refuses to re-anchor looks identical from the outside to
+    one that has no reason to, and telling them apart previously meant waiting
+    for the sensor to roll over to the other run.
+    """
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+
+    arrivals = result["arrivals"]
+    assert arrivals["ladder"] == [3.0, 2.0, 1.0, 0.5]
+    assert "schema" in arrivals
+    assert "riders" in arrivals
+    assert "crossed_today" in arrivals
