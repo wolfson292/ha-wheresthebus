@@ -20,7 +20,7 @@ from custom_components.wheresthebus.api import (
     WheresTheBusAuthError,
     WheresTheBusError,
 )
-from custom_components.wheresthebus.const import DOMAIN
+from custom_components.wheresthebus.const import ARRIVAL_SCHEMA, DOMAIN
 
 from .fixtures import RIDER_INFO, STUDENT_SCANS
 
@@ -570,7 +570,9 @@ async def test_history_is_replayed_again_when_the_scheme_widens(
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
     # The replay ran and stamped the current scheme, so it will not run again.
-    assert hass_storage[key]["data"]["schema"] == 2
+    # Read from the constant: hard-coding it meant the assertion went stale
+    # the moment the scheme was bumped, which is exactly when it matters.
+    assert hass_storage[key]["data"]["schema"] == ARRIVAL_SCHEMA
     assert "riders" in hass_storage[key]["data"]
 
 
@@ -584,7 +586,7 @@ async def test_history_is_not_replayed_twice(
     mock_config_entry.add_to_hass(hass)
     key = f"wheresthebus_arrivals.{mock_config_entry.entry_id}"
     stored = {
-        "schema": 2,
+        "schema": ARRIVAL_SCHEMA,
         "riders": {
             "12345678": [
                 {
