@@ -492,6 +492,31 @@ def _reject_outliers(times: list[int]) -> tuple[list[int], int]:
     return kept, len(times) - len(kept)
 
 
+def _merge_arrivals(
+    existing: list[RunArrival], fresh: list[RunArrival]
+) -> list[RunArrival]:
+    """Combine two sets of arrivals, keeping whichever record knows more.
+
+    A bus reaches a given stop once per run per day, so that pair identifies
+    an arrival — not its timestamp, which differs by microseconds between the
+    live path (the clock when the poll landed) and a replay (the recorder's
+    own stamp for the same reading).
+
+    Treating those as separate arrivals had two consequences. Duplicates
+    accumulated, each counting towards the sample total. Worse, a replay
+    carrying a fuller record was discarded as already known, so the four-rung
+    ladder kept losing to the single rung an older version had written, and
+    the morning estimate never re-anchored.
+    """
+    by_run_day: dict[tuple[str, date], RunArrival] = {}
+    for item in [*existing, *fresh]:
+        key = (item.run, dt_util.as_local(item.arrival).date())
+        current = by_run_day.get(key)
+        if current is None or len(item.legs) > len(current.legs):
+            by_run_day[key] = item
+    return sorted(by_run_day.values(), key=lambda item: item.arrival)
+
+
 def _trim_per_run(history: list[RunArrival]) -> list[RunArrival]:
     """Keep the most recent ARRIVAL_HISTORY_LIMIT arrivals of each run."""
     kept: list[RunArrival] = []
@@ -896,14 +921,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 )
 
         for child_id, arrivals in recovered.items():
-            known = {item.arrival for item in self._arrivals.get(child_id, [])}
-            fresh = [item for item in arrivals if item.arrival not in known]
-            if not fresh:
-                continue
-            history = self._arrivals.setdefault(child_id, [])
-            history.extend(fresh)
-            history.sort(key=lambda item: item.arrival)
-            self._arrivals[child_id] = _trim_per_run(history)
+            merged = _merge_arrivals(self._arrivals.get(child_id, []), arrivals)
+            self._arrivals[child_id] = _trim_per_run(merged)
 
         # Recorded even when nothing new was found, so an instance whose
         # recorder has no history left does not replay on every restart.
@@ -934,7 +953,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 and (parsed := dt_util.parse_datetime(item.get("at", ""))) is not None
             ]
             if restored:
-                self._arrivals[child_id] = restored
+                # Collapses duplicates written by earlier versions, which each
+                # counted towards the sample total and skewed the spread.
+                self._arrivals[child_id] = _merge_arrivals(restored, [])
 
     async def _async_save_arrivals(self) -> None:
         """Persist observed arrivals."""

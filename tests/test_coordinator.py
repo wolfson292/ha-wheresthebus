@@ -25,6 +25,7 @@ from custom_components.wheresthebus.coordinator import (
     ScanEvent,
     Student,
     _attach_scans,
+    _merge_arrivals,
     _pair_riders,
     _reject_outliers,
     _trim_per_run,
@@ -538,3 +539,62 @@ def test_predict_school_arrival_rejects_a_badly_late_morning() -> None:
     assert prediction is not None
     assert prediction.samples == 3
     assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "09:30"
+
+
+def _arrival(day: int, run: str, legs: dict[int, int], micro: int = 0) -> RunArrival:
+    """Build an arrival on a given September morning."""
+    return RunArrival(
+        run=run,
+        arrival=dt_util.as_utc(_local(8, 1, day=day).replace(microsecond=micro)),
+        closest=0.0,
+        legs=legs,
+    )
+
+
+def test_merge_arrivals_prefers_the_record_that_knows_more() -> None:
+    """A replay carrying the full ladder must beat an older single rung.
+
+    The two differ by microseconds — the live path stamps the clock when the
+    poll landed, a replay uses the recorder's stamp for the same reading — so
+    matching on timestamp discarded the fuller record as already known, and
+    the ladder never populated.
+    """
+    existing = [_arrival(1, "am", {2: 360}, micro=116985)]
+    fresh = [_arrival(1, "am", {0: 480, 1: 330, 2: 240, 3: 120}, micro=116702)]
+
+    merged = _merge_arrivals(existing, fresh)
+
+    assert len(merged) == 1
+    assert merged[0].legs == {0: 480, 1: 330, 2: 240, 3: 120}
+
+
+def test_merge_arrivals_collapses_duplicates_already_stored() -> None:
+    """Duplicates written by earlier versions inflated the sample count."""
+    existing = [
+        _arrival(1, "am", {}, micro=116702),
+        _arrival(1, "am", {2: 360}, micro=116985),
+    ]
+
+    merged = _merge_arrivals(existing, [])
+
+    assert len(merged) == 1
+    assert merged[0].legs == {2: 360}
+
+
+def test_merge_arrivals_keeps_the_two_runs_of_a_day_apart() -> None:
+    """Morning and afternoon are separate arrivals, not duplicates."""
+    existing = [_arrival(1, "am", {2: 360}), _arrival(1, "pm", {2: 269})]
+
+    merged = _merge_arrivals(existing, [])
+
+    assert len(merged) == 2
+    assert {item.run for item in merged} == {"am", "pm"}
+
+
+def test_merge_arrivals_keeps_the_same_run_on_different_days() -> None:
+    """Consecutive mornings are distinct arrivals."""
+    merged = _merge_arrivals(
+        [_arrival(1, "am", {2: 360})], [_arrival(2, "am", {2: 270})]
+    )
+
+    assert len(merged) == 2
