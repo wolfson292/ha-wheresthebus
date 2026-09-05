@@ -36,6 +36,7 @@ from .const import (
     ATTR_SPREAD_MINUTES,
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
+    ATTR_SUBSTITUTE_BUS,
     BUS_STATUS_OPTIONS,
     SCAN_DROPOFF,
     SCAN_PICKUP,
@@ -360,6 +361,7 @@ class WheresTheBusStudentSensor(WheresTheBusEntity, SensorEntity):
             return {
                 ATTR_STUDENT_ID: student.student_id,
                 ATTR_SCHOOL_NAME: student.school_name,
+                ATTR_SUBSTITUTE_BUS: student.substitute_bus,
             }
 
         scan = self.entity_description.scan_fn(student)

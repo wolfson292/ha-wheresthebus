@@ -22,7 +22,7 @@ from custom_components.wheresthebus.api import (
 )
 from custom_components.wheresthebus.const import ARRIVAL_SCHEMA, DOMAIN
 
-from .fixtures import RIDER_INFO, STUDENT_SCANS
+from .fixtures import RIDER_INFO, STUDENT_SCANS, USER_INFO
 
 
 def freeze_time_local(*parts: int):
@@ -611,3 +611,39 @@ async def test_history_is_not_replayed_twice(
     assert mock_config_entry.state is ConfigEntryState.LOADED
     rider = hass_storage[key]["data"]["riders"]["12345678"]
     assert rider[0]["legs"] == {"0": 600, "1": 360, "2": 240, "3": 60}
+
+
+async def test_a_substitute_day_is_recorded_but_not_learned_from(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A replacement vehicle keeps its own time, so it must not teach.
+
+    The arrival is still kept — it happened, and hiding it would make the
+    history lie — but a different bus and driver run the route differently,
+    and averaging that in drags every following day's estimate.
+    """
+    substitute = {
+        **USER_INFO,
+        "childBuses": [{**USER_INFO["childBuses"][0], "sub": "1962"}],
+    }
+    mock_api.async_get_user_info.return_value = substitute
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    with freeze_time_local(2026, 9, 7, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+    with freeze_time_local(2026, 9, 7, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    recorded = buses.arrival_diagnostics()["riders"]["12345678"]["arrivals"]
+    assert [item["substitute"] for item in recorded] == [True]
+
+    # Recorded, but the estimate still falls back to the timetable.
+    with freeze_time_local(2026, 9, 8, 6, 0):
+        prediction = buses.predict_next_arrival(12345678)
+    assert prediction is not None
+    assert prediction.source == "scheduled"

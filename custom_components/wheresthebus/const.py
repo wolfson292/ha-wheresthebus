@@ -40,6 +40,7 @@ REQUEST_TIMEOUT: Final = timedelta(seconds=30)
 ATTR_BUS_NUMBER: Final = "bus_number"
 ATTR_RAW_STATUS: Final = "raw_status"
 ATTR_ROUTE_NUMBER: Final = "route_number"
+ATTR_SUBSTITUTE_BUS: Final = "substitute_bus"
 ATTR_SCAN_LOCATION: Final = "scan_location"
 ATTR_SCAN_METHOD: Final = "scan_method"
 ATTR_SCHOOL_NAME: Final = "school_name"
