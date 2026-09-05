@@ -96,6 +96,9 @@ class RunArrival:
     run: str
     arrival: datetime
     closest: float
+    # A replacement vehicle keeps its own time. Recorded so the arrival stays
+    # visible, but held out of what the estimate learns from.
+    substitute: bool = False
     # Seconds from crossing each anchor rung to reaching the stop, keyed by
     # rung index. Empty for arrivals recorded before this was tracked, or
     # where the bus was already inside every rung when the window opened.
@@ -174,6 +177,8 @@ class Student:
     student_id: str | None = None
     bus_number: str | None = None
     route_number: str | None = None
+    # The API names a replacement vehicle here when one is covering the route.
+    substitute_bus: str | None = None
     school_name: str | None = None
     am_stop_time: str | None = None
     pm_stop_time: str | None = None
@@ -608,6 +613,7 @@ def _build_student(
         student_id=rider.get("studentId"),
         bus_number=bus_number,
         route_number=bus.get("routeNo"),
+        substitute_bus=(bus.get("sub") or "").strip() or None,
         school_name=rider.get("schoolName"),
         am_stop_time=rider.get("amStopTime"),
         pm_stop_time=rider.get("pmStopTime"),
@@ -830,7 +836,13 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             }
             history = self._arrivals.setdefault(child_id, [])
             history.append(
-                RunArrival(run=run, arrival=when, closest=closest, legs=legs)
+                RunArrival(
+                    run=run,
+                    arrival=when,
+                    closest=closest,
+                    legs=legs,
+                    substitute=student.substitute_bus is not None,
+                )
             )
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
@@ -855,6 +867,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             "at": dt_util.as_local(item.arrival).isoformat(),
                             "closest": item.closest,
                             "legs_seconds": dict(sorted(item.legs.items())),
+                            "substitute": item.substitute,
                         }
                         for item in arrivals
                     ],
@@ -947,6 +960,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     arrival=parsed,
                     closest=float(item.get("closest", 0.0)),
                     legs=_load_legs(item),
+                    substitute=bool(item.get("sub")),
                 )
                 for item in arrivals
                 if item.get("run") in (RUN_AM, RUN_PM)
@@ -969,6 +983,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             "at": item.arrival.isoformat(),
                             "closest": item.closest,
                             "legs": {str(k): v for k, v in item.legs.items()},
+                            "sub": item.substitute,
                         }
                         for item in arrivals
                     ]
@@ -1090,7 +1105,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             dt_util.as_local(item.arrival).hour * 60
             + dt_util.as_local(item.arrival).minute
             for item in self._arrivals.get(child_id, [])
-            if item.run == run
+            if item.run == run and not item.substitute
         )
         if not times:
             return None, 0, None, 0

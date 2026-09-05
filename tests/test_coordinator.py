@@ -598,3 +598,20 @@ def test_merge_arrivals_keeps_the_same_run_on_different_days() -> None:
     )
 
     assert len(merged) == 2
+
+
+def test_pair_riders_reads_the_substitute_bus() -> None:
+    """The API names a replacement vehicle in the sub field."""
+    buses = [{"childId": 1, "busNo": "2563", "routeNo": "2563", "sub": "1962"}]
+
+    students = _pair_riders(buses, [])
+
+    assert students[1].bus_number == "2563"
+    assert students[1].substitute_bus == "1962"
+
+
+def test_pair_riders_treats_an_empty_substitute_as_none() -> None:
+    """An empty string is the normal case, not a bus called ''."""
+    buses = [{"childId": 1, "busNo": "2563", "routeNo": "2563", "sub": ""}]
+
+    assert _pair_riders(buses, [])[1].substitute_bus is None

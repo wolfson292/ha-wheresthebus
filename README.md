@@ -90,6 +90,14 @@ Two things make the observations trustworthy:
 - **The bus must actually reach the stop** (within 0.3 mi). On a run where
   nobody boards, the route can stay half a mile out; that is not an arrival.
 
+### Substitute buses
+
+The API names a replacement vehicle in each rider's `sub` field when one is
+covering the route. It is surfaced as a `substitute_bus` attribute on
+`bus_number`, and arrivals on those days are recorded but **held out of what
+the estimate learns from** — a different bus and driver run the route
+differently, and averaging that in drags every following day.
+
 ### The ride to school
 
 `school_arrival` predicts when the morning ride reaches school, learned from
