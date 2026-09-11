@@ -13,6 +13,7 @@ from custom_components.wheresthebus.const import (
     ARRIVAL_HISTORY_LIMIT,
     SCAN_DROPOFF,
     SCAN_PICKUP,
+    TRACK_SAMPLE_LIMIT,
 )
 from custom_components.wheresthebus.const import (
     RUN_AM as SCAN_RUN_AM,
@@ -29,6 +30,7 @@ from custom_components.wheresthebus.coordinator import (
     _pair_riders,
     _reject_outliers,
     _trim_per_run,
+    approach_window,
     classify_scans,
     parse_bus_status,
     parse_stop_time,
@@ -615,3 +617,140 @@ def test_pair_riders_treats_an_empty_substitute_as_none() -> None:
     buses = [{"childId": 1, "busNo": "2563", "routeNo": "2563", "sub": ""}]
 
     assert _pair_riders(buses, [])[1].substitute_bus is None
+
+
+def test_run_window_prefers_the_learned_arrival_over_the_timetable() -> None:
+    """The published time can be far enough out to make the window useless.
+
+    The afternoon timetable here reads 17:48 against a real arrival near
+    17:20, so a timetable-centred window opened at 17:18 — after the bus had
+    already crossed the 3, 2 and 1 mile rungs.
+    """
+    reference = _local(17, 0, day=11)
+    timetable = run_window(parse_stop_time("5:48 P.M."), reference)
+    learned = run_window(
+        parse_stop_time("5:48 P.M."), reference, parse_stop_time("5:20 P.M.")
+    )
+
+    assert timetable is not None
+    assert learned is not None
+    assert timetable[0].strftime("%H:%M") == "17:18"
+    assert learned[0].strftime("%H:%M") == "16:50"
+
+
+def test_approach_window_opens_before_the_arrival_window() -> None:
+    """The outer rungs are crossed well before an arrival window would open."""
+    reference = _local(17, 0, day=11)
+    arriving = run_window(None, reference, parse_stop_time("5:20 P.M."))
+    watching = approach_window(None, reference, parse_stop_time("5:20 P.M."))
+
+    assert arriving is not None
+    assert watching is not None
+    assert watching[0] < arriving[0]
+    assert watching[0].strftime("%H:%M") == "16:35"
+    # Both close together: a bus still far out long after it was due is on
+    # some other errand, not a late approach.
+    assert watching[1] == arriving[1]
+
+
+def test_reconstruct_recovers_an_arrival_a_timetable_window_would_miss() -> None:
+    """A bus that beats its timetable by more than the window is invisible.
+
+    The afternoon timetable reads 17:48, so the arrival window runs 17:18 to
+    18:18. An arrival at 17:12 — ordinary here, where the bus really comes
+    around 17:20 — falls outside it and is never learned, which is how the
+    afternoon stayed stuck on five samples.
+    """
+    states = [
+        _reading(_local(17, 4, day=11), "3.1"),
+        _reading(_local(17, 6, day=11), "2.1"),
+        _reading(_local(17, 9, day=11), "0.9"),
+        _reading(_local(17, 12, day=11), "0.1"),
+    ]
+
+    on_timetable = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+    on_learned = reconstruct_arrivals(
+        states, _rider(), 0.3, LADDER, {"pm": parse_stop_time("5:20 P.M.")}
+    )
+
+    assert on_timetable == []
+    assert len(on_learned) == 1
+    assert sorted(on_learned[0].legs) == [0, 1, 2, 3]
+    # 3.1 is still outside the 3 mile rung; it is crossed at 17:06.
+    assert on_learned[0].legs[0] == 6 * 60
+
+
+def test_a_crossing_is_discarded_when_the_bus_turns_back_out() -> None:
+    """On 11 Sep the bus touched 2.7 miles, drifted to 3.8, then came in.
+
+    Anchoring on the first touch would have put the arrival eight minutes
+    early, so a crossing only counts while the bus keeps closing.
+    """
+    states = [
+        _reading(_local(17, 5, day=11), "2.7"),
+        _reading(_local(17, 11, day=11), "3.8"),
+        _reading(_local(17, 13, day=11), "2.8"),
+        _reading(_local(17, 20, day=11), "0.1"),
+    ]
+
+    arrivals = reconstruct_arrivals(
+        states, _rider(), 0.3, LADDER, {"pm": parse_stop_time("5:20 P.M.")}
+    )
+
+    assert arrivals[0].recedes == 1
+    # Seven minutes from the real crossing at 17:13, not fifteen from 17:05.
+    assert arrivals[0].legs[0] == 7 * 60
+
+
+def test_the_bus_leaving_again_does_not_undo_its_approach() -> None:
+    """Readings after the stop are the bus departing, not the approach failing."""
+    states = [
+        _reading(_local(7, 52, 47), "0.9"),
+        _reading(_local(7, 56, 47), "0.0"),
+        _reading(_local(8, 4), "1.3"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    assert arrivals[0].recedes == 0
+    assert arrivals[0].legs[2] == 240
+
+
+def test_the_approach_track_is_kept_oldest_first_relative_to_arrival() -> None:
+    """The ladder records four instants; the track records the shape between."""
+    states = [
+        _reading(_local(7, 50), "2.5"),
+        _reading(_local(7, 54, 47), "0.9"),
+        _reading(_local(7, 56, 47), "0.0"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    assert arrivals[0].track == [(407, 2.5), (120, 0.9), (0, 0.0)]
+
+
+def test_the_track_keeps_the_samples_nearest_the_arrival() -> None:
+    """When the cap bites it is the far end that goes.
+
+    The estimate hangs on the last few miles, so those are the samples worth
+    keeping when a long approach will not fit.
+    """
+    # Inside the approach window, which opens 45 minutes before the 07:56
+    # centre, and dense enough that the cap has to bite.
+    start = _local(7, 15, day=3)
+    states = [
+        _reading(start + timedelta(seconds=15 * step), "1.0")
+        for step in range(TRACK_SAMPLE_LIMIT * 2)
+    ]
+    states.append(_reading(_local(7, 56, 47), "0.0"))
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    track = arrivals[0].track
+    assert len(track) == TRACK_SAMPLE_LIMIT
+    assert track[-1] == (0, 0.0)
+    # Oldest first, and every retained sample is nearer the arrival than the
+    # ones the cap dropped.
+    assert [point[0] for point in track] == sorted(
+        (point[0] for point in track), reverse=True
+    )

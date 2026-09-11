@@ -81,14 +81,44 @@ Each run keeps its own history (the most recent 30, roughly six school
 weeks). The two runs do not share a budget: a stretch of missed afternoons
 would otherwise quietly evict mornings that were still worth learning from.
 
-Two things make the observations trustworthy:
+Three things make the observations trustworthy:
 
-- **Only arrivals within 30 minutes of the scheduled stop time count.** Buses
-  routinely pass a stop on unrelated earlier routes — one was observed at the
-  stop at 06:13 for an 07:56 pickup — and learning from those would be worse
-  than useless.
+- **Runs are centred on the learned arrival, not the timetable.** A run counts
+  as genuine within 30 minutes of that centre, and the approach is watched from
+  45 minutes before it. Buses routinely pass a stop on unrelated earlier routes
+  — one was observed at the stop at 06:13 for an 07:56 pickup — and learning
+  from those would be worse than useless. Centring on the published time is
+  not good enough: one district's afternoon timetable read 17:48 against a real
+  arrival near 17:20, so a timetable-centred window opened *after* the bus had
+  crossed the 3, 2 and 1 mile rungs. Every one was discarded and the estimate
+  ran on the clock median all afternoon. Until a run has been observed at all,
+  the timetable is the centre.
+- **A rung only counts while the bus keeps closing.** A bus that crosses a rung
+  and then drifts back outside it by more than 15%, without ever reaching the
+  stop, loses that crossing — it was serving nearby stops, not making its final
+  approach. Readings after the bus has arrived are the bus leaving, and never
+  undo the approach that preceded them.
 - **The bus must actually reach the stop** (within 0.3 mi). On a run where
   nobody boards, the route can stay half a mile out; that is not an arrival.
+
+`anchored_at` and `anchor_samples` report which rung the live estimate is
+hanging on and how many past journeys back it; both are absent when the
+estimate is only the clock median. `window_centre` reports where the run's
+window was placed.
+
+### What each journey records
+
+Alongside the four rung timings, every arrival keeps the **shape of its
+approach** — up to 80 `(seconds before arrival, distance)` samples, plus a
+count of how often the bus turned back out and how many readings had a stale
+GPS fix. The ladder says when the bus passed four points; the track says what
+it did in between, which is what distinguishes a bus that crawled the whole
+way from one that sat still and then sprinted.
+
+None of this is used by the current estimator. It is recorded so that a better
+one can be fitted to journeys already observed, instead of waiting a term to
+collect them again. It is all in the diagnostics download, along with the
+per-rung spread that says which rungs are worth trusting.
 
 ### Substitute buses
 

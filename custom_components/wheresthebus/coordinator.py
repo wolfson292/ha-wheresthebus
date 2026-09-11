@@ -21,6 +21,7 @@ from .backfill import async_distance_history, distance_entity_id
 from .const import (
     ANCHOR_LADDER_KM,
     ANCHOR_LADDER_MILES,
+    APPROACH_LEAD_MINUTES,
     ARRIVAL_HISTORY_LIMIT,
     ARRIVAL_SCHEMA,
     ARRIVAL_STORAGE_KEY,
@@ -32,6 +33,7 @@ from .const import (
     DOMAIN,
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
+    RECEDE_HYSTERESIS,
     RUN_AM,
     RUN_PM,
     RUN_WINDOW_MINUTES,
@@ -45,6 +47,7 @@ from .const import (
     STATUS_STALE,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TRACK_SAMPLE_LIMIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,6 +90,15 @@ class ArrivalPrediction:
     spread: int | None
     outliers: int
     scheduled: time
+    # Set only while the estimate hangs on a live rung crossing: which rung,
+    # and how many past journeys its typical leg was taken from. A clock
+    # median leaves both None, which is what tells the two apart from outside.
+    anchored_at: float | None = None
+    anchor_samples: int | None = None
+    # Where the run's window was centred — the learned arrival once there is
+    # one, otherwise the timetable. Exposed because a window centred on a
+    # timetable that is twenty minutes out is the failure it hides behind.
+    centre: time | None = None
 
 
 @dataclass(slots=True)
@@ -103,22 +115,63 @@ class RunArrival:
     # rung index. Empty for arrivals recorded before this was tracked, or
     # where the bus was already inside every rung when the window opened.
     legs: dict[int, int] = field(default_factory=dict)
+    # The shape of the approach: (seconds before arrival, distance) samples,
+    # oldest first. The ladder says when the bus passed four points; this says
+    # what it did in between, which is what a better model will need.
+    track: list[tuple[int, float]] = field(default_factory=list)
+    # How often the bus crossed a rung and then fell back outside it. A run
+    # with several of these was weaving through nearby stops, and its legs are
+    # correspondingly less representative.
+    recedes: int = 0
+    # Samples during the approach where the GPS fix was not current, so the
+    # distances behind them were extrapolated rather than observed.
+    stale: int = 0
+
+
+def _run_centre(
+    scheduled: time | None, reference: datetime, learned: time | None = None
+) -> datetime | None:
+    """Return the local instant a run is expected to arrive.
+
+    ``learned`` is the median of arrivals actually observed, and it wins over
+    the timetable whenever there is one: the published time can be twenty
+    minutes out, and everything downstream is positioned relative to this.
+    """
+    centre = learned or scheduled
+    if centre is None:
+        return None
+    return dt_util.as_local(reference).replace(
+        hour=centre.hour, minute=centre.minute, second=0, microsecond=0
+    )
 
 
 def run_window(
-    scheduled: time | None, reference: datetime
+    scheduled: time | None, reference: datetime, learned: time | None = None
 ) -> tuple[datetime, datetime] | None:
     """Return the local window in which a run's arrival is believed genuine."""
-    if scheduled is None:
+    centre = _run_centre(scheduled, reference, learned)
+    if centre is None:
         return None
-    centre = dt_util.as_local(reference).replace(
-        hour=scheduled.hour,
-        minute=scheduled.minute,
-        second=0,
-        microsecond=0,
-    )
     span = timedelta(minutes=RUN_WINDOW_MINUTES)
     return centre - span, centre + span
+
+
+def approach_window(
+    scheduled: time | None, reference: datetime, learned: time | None = None
+) -> tuple[datetime, datetime] | None:
+    """Return the window in which the run's approach is worth watching.
+
+    Opens earlier than the arrival window so the outer rungs are seen at all,
+    and closes with it: a bus still out at three miles half an hour after it
+    should have arrived is on some other errand.
+    """
+    centre = _run_centre(scheduled, reference, learned)
+    if centre is None:
+        return None
+    return (
+        centre - timedelta(minutes=APPROACH_LEAD_MINUTES),
+        centre + timedelta(minutes=RUN_WINDOW_MINUTES),
+    )
 
 
 # "3 min. ago", "12 mins ago" — the number is the age of the GPS fix.
@@ -234,20 +287,91 @@ def classify_scans(scans: list[ScanEvent], school_name: str | None) -> list[Scan
     return sorted(scans, key=lambda item: item.timestamp)
 
 
+@dataclass(slots=True)
+class ApproachRecorder:
+    """Accumulates one run's approach as the distance readings come in.
+
+    Shared by the live path and the recorder replay so that a journey learned
+    from history and one watched as it happened produce the same record. They
+    drifted apart once before, and the replay quietly learned less.
+    """
+
+    crossings: dict[int, datetime] = field(default_factory=dict)
+    track: list[tuple[datetime, float]] = field(default_factory=list)
+    recedes: int = 0
+    stale: int = 0
+    # Set once the bus has actually reached the stop. Everything after that is
+    # the bus leaving again, and must not be read as the approach coming apart.
+    arrived: bool = False
+
+    def sample(
+        self,
+        ladder: tuple[float, ...],
+        when: datetime,
+        distance: float,
+        arrival_threshold: float,
+        *,
+        fresh: bool = True,
+    ) -> None:
+        """Fold one distance reading into the approach."""
+        if self.arrived:
+            # The journey is over; the bus pulling away is not new information.
+            return
+
+        self.track.append((when, distance))
+        if not fresh:
+            self.stale += 1
+        if distance <= arrival_threshold:
+            self.arrived = True
+
+        for rung, threshold in enumerate(ladder):
+            if distance <= threshold:
+                self.crossings.setdefault(rung, when)
+            elif (
+                not self.arrived
+                and distance > threshold * RECEDE_HYSTERESIS
+                and rung in self.crossings
+            ):
+                # It crossed, then went back out without ever reaching the
+                # stop: that was not the final approach, so the crossing must
+                # not anchor anything.
+                del self.crossings[rung]
+                self.recedes += 1
+
+    def finish(self, arrival: datetime) -> dict[str, Any]:
+        """Return the fields describing this approach, given when it ended."""
+        return {
+            "legs": {
+                rung: int((arrival - crossed).total_seconds())
+                for rung, crossed in self.crossings.items()
+                if crossed <= arrival
+            },
+            "track": [
+                (int((arrival - when).total_seconds()), distance)
+                for when, distance in self.track[-TRACK_SAMPLE_LIMIT:]
+                if when <= arrival
+            ],
+            "recedes": self.recedes,
+            "stale": self.stale,
+        }
+
+
 def reconstruct_arrivals(
     states: list[State],
     student: Student,
     arrival_threshold: float,
     ladder: tuple[float, ...],
+    learned: dict[str, time] | None = None,
 ) -> list[RunArrival]:
     """Find each run's arrival in a stretch of recorded distance readings.
 
     Applies exactly the filters the live path applies: the closest approach
     inside a run's window is that run's arrival, provided it actually reached
-    the stop. The first reading inside the anchor gives the final leg.
+    the stop, and the approach either side of it gives the rung timings.
     """
+    learned = learned or {}
     best: dict[tuple[date, str], tuple[float, datetime]] = {}
-    anchor: dict[tuple[date, str], dict[int, datetime]] = {}
+    approaches: dict[tuple[date, str], ApproachRecorder] = {}
 
     for state in states:
         try:
@@ -261,28 +385,30 @@ def reconstruct_arrivals(
             (RUN_AM, student.am_scheduled),
             (RUN_PM, student.pm_scheduled),
         ):
-            window = run_window(scheduled, when)
-            if window is None or not window[0] <= local <= window[1]:
+            centre = learned.get(run)
+            watching = approach_window(scheduled, when, centre)
+            if watching is None or not watching[0] <= local <= watching[1]:
                 continue
             key = (local.date(), run)
+            approaches.setdefault(key, ApproachRecorder()).sample(
+                ladder, when, distance, arrival_threshold
+            )
+
+            arriving = run_window(scheduled, when, centre)
+            if arriving is None or not arriving[0] <= local <= arriving[1]:
+                continue
             current = best.get(key)
             if current is None or distance < current[0]:
                 best[key] = (distance, when)
-            crossings = anchor.setdefault(key, {})
-            for rung, threshold in enumerate(ladder):
-                if distance <= threshold and rung not in crossings:
-                    crossings[rung] = when
 
     arrivals: list[RunArrival] = []
     for (day, run), (closest, when) in best.items():
         if closest > arrival_threshold:
             continue
-        legs = {
-            rung: int((when - crossed).total_seconds())
-            for rung, crossed in anchor.get((day, run), {}).items()
-            if crossed <= when
-        }
-        arrivals.append(RunArrival(run=run, arrival=when, closest=closest, legs=legs))
+        approach = approaches.get((day, run), ApproachRecorder())
+        arrivals.append(
+            RunArrival(run=run, arrival=when, closest=closest, **approach.finish(when))
+        )
     return sorted(arrivals, key=lambda item: item.arrival)
 
 
@@ -468,6 +594,26 @@ def _load_legs(item: dict[str, Any]) -> dict[int, int]:
     # Pre-ladder records held one duration, measured at what is now rung 2.
     single = item.get("approach")
     return {2: int(single)} if isinstance(single, int) else {}
+
+
+# Each track sample is stored as a bare (age, distance) pair.
+_TRACK_POINT_LENGTH = 2
+
+
+def _load_track(item: dict[str, Any]) -> list[tuple[int, float]]:
+    """Read a stored approach track, tolerating records written without one."""
+    raw = item.get("track")
+    if not isinstance(raw, list):
+        return []
+    track: list[tuple[int, float]] = []
+    for point in raw:
+        if not isinstance(point, (list, tuple)) or len(point) != _TRACK_POINT_LENGTH:
+            continue
+        try:
+            track.append((int(point[0]), float(point[1])))
+        except (TypeError, ValueError):
+            continue
+    return track
 
 
 def _median(values: list[int]) -> int:
@@ -716,9 +862,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self._schema = 0
         # (child_id, run, local date) -> closest approach seen so far.
         self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
-        # (child_id, run, local date) -> when the bus first came inside the
-        # approach anchor for that run.
-        self._anchor: dict[tuple[int, str, date], dict[int, datetime]] = {}
+        # (child_id, run, local date) -> the approach as it is unfolding.
+        self._approach: dict[tuple[int, str, date], ApproachRecorder] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -744,7 +889,12 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
             # ``isDistKm`` is an account-level flag repeated on every response.
             self.distance_in_km = bool(info.get("isDistKm"))
-            self._observe(child_id, student, info.get("dist"))
+            self._observe(
+                child_id,
+                student,
+                info.get("dist"),
+                parse_bus_status(info.get("stsMsg"))[0],
+            )
 
         if self._promote_pending():
             await self._async_save_arrivals()
@@ -765,8 +915,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         """Return how close counts as an arrival, in the account's units."""
         return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
 
-    def _observe(self, child_id: int, student: Student, dist: Any) -> None:
-        """Track the closest approach inside whichever run window is open."""
+    def _window_centre(self, child_id: int, run: str) -> time | None:
+        """Return the learned arrival for a run, or None while it has none."""
+        return self._learned_time(child_id, run)[0]
+
+    def _observe(
+        self, child_id: int, student: Student, dist: Any, status: str | None = None
+    ) -> None:
+        """Fold one position reading into whichever run is currently active.
+
+        The approach is watched from well before the arrival window opens, so
+        the outer rungs are recorded rather than missed; only readings inside
+        the tighter arrival window can count as the arrival itself.
+        """
         if dist is None:
             return
         try:
@@ -775,21 +936,29 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return
 
         now = dt_util.utcnow()
+        local_now = dt_util.as_local(now)
+        # Anything but a current fix means the distance behind it was
+        # extrapolated, which is what the stale count is recording.
+        fresh = status == STATUS_CURRENT
         for run, scheduled in (
             (RUN_AM, student.am_scheduled),
             (RUN_PM, student.pm_scheduled),
         ):
-            window = run_window(scheduled, now)
-            if window is None or not window[0] <= dt_util.as_local(now) <= window[1]:
+            centre = self._window_centre(child_id, run)
+            watching = approach_window(scheduled, now, centre)
+            if watching is None or not watching[0] <= local_now <= watching[1]:
                 continue
-            key = (child_id, run, dt_util.as_local(now).date())
+            key = (child_id, run, local_now.date())
+            self._approach.setdefault(key, ApproachRecorder()).sample(
+                self._ladder, now, distance, self._arrival_threshold, fresh=fresh
+            )
+
+            arriving = run_window(scheduled, now, centre)
+            if arriving is None or not arriving[0] <= local_now <= arriving[1]:
+                continue
             best = self._pending.get(key)
             if best is None or distance < best[0]:
                 self._pending[key] = (distance, now)
-            crossings = self._anchor.setdefault(key, {})
-            for rung, threshold in enumerate(self._ladder):
-                if distance <= threshold and rung not in crossings:
-                    crossings[rung] = now
 
     def _promote_pending(self) -> bool:
         """Turn closed windows into arrivals. Returns True if anything changed."""
@@ -797,15 +966,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         local_now = dt_util.as_local(now)
         changed = False
 
-        for key in list(self._pending):
+        # The approach is watched over a wider window than the arrival, so a
+        # run can have a recorded approach and no pending arrival at all —
+        # a day nobody was collected. Both have to be swept.
+        for key in list(self._pending | self._approach.keys()):
             child_id, run, day = key
             student = (self.students.data or {}).get(child_id)
             if student is None:
-                del self._pending[key]
+                self._pending.pop(key, None)
+                self._approach.pop(key, None)
                 continue
 
             scheduled = student.am_scheduled if run == RUN_AM else student.pm_scheduled
-            window = run_window(scheduled, now)
+            window = run_window(scheduled, now, self._window_centre(child_id, run))
             still_open = (
                 window is not None
                 and day == local_now.date()
@@ -814,38 +987,39 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if still_open:
                 continue
 
-            closest, when = self._pending.pop(key)
-            if closest > self._arrival_threshold:
-                self._anchor.pop(key, None)
+            approach = self._approach.pop(key, ApproachRecorder())
+            pending = self._pending.pop(key, None)
             # A run where the bus never really came — nobody to collect, or a
             # cancelled route — must not be learned as an arrival time.
-            if closest > self._arrival_threshold:
+            if pending is None or pending[0] > self._arrival_threshold:
                 _LOGGER.debug(
-                    "Ignoring %s run on %s: closest approach was %.1f",
+                    "Ignoring %s run on %s: closest approach was %s",
                     run,
                     day,
-                    closest,
+                    "never inside the window"
+                    if pending is None
+                    else f"{pending[0]:.1f}",
                 )
                 continue
 
-            crossings = self._anchor.pop(key, {})
-            legs = {
-                rung: int((when - crossed).total_seconds())
-                for rung, crossed in crossings.items()
-                if crossed <= when
-            }
+            closest, when = pending
             history = self._arrivals.setdefault(child_id, [])
             history.append(
                 RunArrival(
                     run=run,
                     arrival=when,
                     closest=closest,
-                    legs=legs,
                     substitute=student.substitute_bus is not None,
+                    **approach.finish(when),
                 )
             )
             history.sort(key=lambda item: item.arrival)
             self._arrivals[child_id] = _trim_per_run(history)
+            # Without this the arrival lived only in memory: the caller saves
+            # on a True, and this was left at False, so every journey learned
+            # while running was lost on the next restart and only came back if
+            # the recorder still held it.
+            changed = True
 
         return changed
 
@@ -868,6 +1042,12 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             "closest": item.closest,
                             "legs_seconds": dict(sorted(item.legs.items())),
                             "substitute": item.substitute,
+                            "recedes": item.recedes,
+                            "stale_samples": item.stale,
+                            # (seconds before arrival, distance), oldest
+                            # first — the raw material for fitting a better
+                            # estimator than the median-of-legs one.
+                            "track": [list(point) for point in item.track],
                         }
                         for item in arrivals
                     ],
@@ -882,12 +1062,42 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                         )
                         for run in (RUN_AM, RUN_PM)
                     },
+                    # How steady each rung actually is. A rung whose legs
+                    # vary by eight minutes is not worth anchoring to, and
+                    # that was invisible while only the median was reported.
+                    "leg_spread_seconds": {
+                        run: {
+                            rung: max(legs) - min(legs)
+                            for rung in range(len(self._ladder))
+                            if (
+                                legs := [
+                                    item.legs[rung]
+                                    for item in arrivals
+                                    if item.run == run and rung in item.legs
+                                ]
+                            )
+                        }
+                        for run in (RUN_AM, RUN_PM)
+                    },
+                    "window_centre": {
+                        run: (
+                            centre.isoformat()
+                            if (centre := self._window_centre(child_id, run))
+                            else None
+                        )
+                        for run in (RUN_AM, RUN_PM)
+                    },
                 }
                 for child_id, arrivals in self._arrivals.items()
             },
-            "crossed_today": {
-                f"{child_id}/{run}/{day}": sorted(crossings)
-                for (child_id, run, day), crossings in self._anchor.items()
+            "in_flight": {
+                f"{child_id}/{run}/{day}": {
+                    "crossed": sorted(approach.crossings),
+                    "samples": len(approach.track),
+                    "recedes": approach.recedes,
+                    "stale": approach.stale,
+                }
+                for (child_id, run, day), approach in self._approach.items()
             },
         }
 
@@ -922,8 +1132,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     "Could not read %s history from the recorder", entity_id
                 )
                 continue
+            # Replay through the same windows the live path uses. Centring
+            # on the timetable here would rediscover exactly the gap this
+            # release exists to close.
             arrivals = reconstruct_arrivals(
-                rows, student, self._arrival_threshold, self._ladder
+                rows,
+                student,
+                self._arrival_threshold,
+                self._ladder,
+                {
+                    run: centre
+                    for run in (RUN_AM, RUN_PM)
+                    if (centre := self._window_centre(child_id, run)) is not None
+                },
             )
             if arrivals:
                 recovered[child_id] = arrivals
@@ -961,6 +1182,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     closest=float(item.get("closest", 0.0)),
                     legs=_load_legs(item),
                     substitute=bool(item.get("sub")),
+                    track=_load_track(item),
+                    recedes=int(item.get("recedes", 0) or 0),
+                    stale=int(item.get("stale", 0) or 0),
                 )
                 for item in arrivals
                 if item.get("run") in (RUN_AM, RUN_PM)
@@ -984,6 +1208,12 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             "closest": item.closest,
                             "legs": {str(k): v for k, v in item.legs.items()},
                             "sub": item.substitute,
+                            # Pairs rather than objects: the track is by far
+                            # the biggest thing in this store, and keys
+                            # repeated 80 times an arrival add up fast.
+                            "track": [[age, dist] for age, dist in item.track],
+                            "recedes": item.recedes,
+                            "stale": item.stale,
                         }
                         for item in arrivals
                     ]
@@ -1018,16 +1248,20 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             # is far steadier. Anchor to the crossing and stop guessing.
             anchored = self._anchored_arrival(child_id, run, local_now)
             if anchored is not None:
+                when, rung_distance, rung_samples = anchored
                 candidates.append(
                     ArrivalPrediction(
                         run=run,
-                        arrival=dt_util.as_utc(anchored),
+                        arrival=dt_util.as_utc(when),
                         source=SOURCE_LEARNED,
                         basis=BASIS_APPROACH,
                         samples=samples,
                         spread=spread,
                         outliers=outliers,
                         scheduled=scheduled,
+                        anchored_at=rung_distance,
+                        anchor_samples=rung_samples,
+                        centre=learned or scheduled,
                     )
                 )
                 continue
@@ -1051,6 +1285,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             spread=spread,
                             outliers=outliers,
                             scheduled=scheduled,
+                            centre=learned or scheduled,
                         )
                     )
                     break
@@ -1061,35 +1296,39 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
     def _anchored_arrival(
         self, child_id: int, run: str, local_now: datetime
-    ) -> datetime | None:
+    ) -> tuple[datetime, float, int] | None:
         """Estimate arrival from the live approach, or None if not applicable.
 
-        Applies only while this run's bus has already crossed the approach
-        anchor today and has not yet arrived.  Returns the crossing time plus
-        the typical final leg, so an early bus is reported early instead of
+        Applies only while this run's bus has crossed a rung today, is still
+        closing, and has not yet arrived.  Returns the crossing time plus the
+        typical leg from that rung, alongside the rung's distance and how many
+        past journeys back it — so an early bus is reported early instead of
         being averaged back towards the usual clock time.
         """
-        crossings = self._anchor.get((child_id, run, local_now.date()))
-        if not crossings:
+        approach = self._approach.get((child_id, run, local_now.date()))
+        if approach is None or not approach.crossings:
             return None
 
         # Tightest rung first: the closer the bus was when it crossed, the less
         # of the journey is left to vary.
-        for rung in sorted(crossings, reverse=True):
+        for rung in sorted(approach.crossings, reverse=True):
             legs = sorted(
                 item.legs[rung]
                 for item in self._arrivals.get(child_id, [])
-                if item.run == run and rung in item.legs
+                if item.run == run and rung in item.legs and not item.substitute
             )
             if legs:
                 break
         else:
             return None
 
-        estimate = dt_util.as_local(crossings[rung]) + timedelta(seconds=_median(legs))
+        crossed = dt_util.as_local(approach.crossings[rung])
+        estimate = crossed + timedelta(seconds=_median(legs))
         # A bus already overdue against this estimate has arrived, or is about
         # to; leave it be rather than reporting a time in the past.
-        return estimate if estimate > local_now else None
+        if estimate <= local_now:
+            return None
+        return estimate, self._ladder[rung], len(legs)
 
     def _learned_time(
         self, child_id: int, run: str

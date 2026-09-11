@@ -78,10 +78,26 @@ SCAN_HISTORY_LIMIT: Final = 50
 # The bus visits the rider's stop twice a day, and passes it on unrelated
 # routes at other times — observed touching the stop at 06:13 for an 07:56
 # pickup.  Arrivals are only recognised within this many minutes either side
-# of the scheduled stop time, which is what keeps the decoy passes out.
+# of the run's centre, which is what keeps the decoy passes out.
 RUN_AM: Final = "am"
 RUN_PM: Final = "pm"
 RUN_WINDOW_MINUTES: Final = 30
+
+# Watching the approach has to start well before the arrival window opens.
+# The window used to be centred on the timetable, and the afternoon timetable
+# here reads 17:48 against a real arrival around 17:20 — so the window opened
+# at 17:18, by which time the bus had already crossed the 3, 2 and 1 mile
+# rungs.  Every one of them was discarded and the estimate fell back to the
+# clock median all afternoon.  Runs are now centred on the LEARNED arrival
+# and the approach is watched from this many minutes before it.
+APPROACH_LEAD_MINUTES: Final = 45
+
+# A rung crossing only counts while the bus keeps closing.  On 11 Sep the bus
+# sat at 2.7 miles at 17:05, drifted back out to 3.8 serving other stops, then
+# came in for real at 17:13 — anchoring on the first touch would have been
+# eight minutes wrong.  A crossing is discarded once the bus is back outside
+# that rung by this factor, which is loose enough to ignore GPS jitter.
+RECEDE_HYSTERESIS: Final = 1.15
 
 # How close the bus must come for a pass to count as "it stopped here".  A run
 # where nobody boards can stay half a mile out, so a loose threshold would
@@ -128,7 +144,17 @@ BACKFILL_DAYS: Final = 14
 # learned under a narrower scheme are not wrong so much as incomplete —
 # 1.7.0 shipped a four-rung ladder that would otherwise have sat with only
 # the one rung its predecessor recorded, and behaved exactly as before.
-ARRIVAL_SCHEMA: Final = 3
+ARRIVAL_SCHEMA: Final = 4
+
+# The shape of each approach is kept alongside its timings: a list of
+# (seconds before arrival, distance) samples.  The ladder only records four
+# instants, which is enough to anchor an estimate and not nearly enough to
+# work out why one was wrong — whether the bus crawled the whole way or sat
+# still and then sprinted.  Keeping the track means a better model can be
+# fitted to journeys already recorded, instead of waiting months to collect
+# them again.  Samples closest to the arrival are kept when the cap bites,
+# because that is the part of the journey the estimate hangs on.
+TRACK_SAMPLE_LIMIT: Final = 80
 
 ANCHOR_LADDER_MILES: Final = (3.0, 2.0, 1.0, 0.5)
 ANCHOR_LADDER_KM: Final = (4.8, 3.2, 1.6, 0.8)
@@ -144,5 +170,11 @@ ATTR_OUTLIERS_EXCLUDED: Final = "outliers_excluded"
 ATTR_PREDICTION_BASIS: Final = "prediction_basis"
 ATTR_RIDE_MINUTES: Final = "typical_ride_minutes"
 ATTR_SCHEDULED: Final = "scheduled"
+# Which rung the live estimate is hanging on, and how many past journeys back
+# it.  Without these an anchored estimate and a clock-median one look alike,
+# and there is no way to tell a rung with one sample from a rung with twenty.
+ATTR_ANCHOR_DISTANCE: Final = "anchored_at"
+ATTR_ANCHOR_SAMPLES: Final = "anchor_samples"
+ATTR_WINDOW_CENTRE: Final = "window_centre"
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"

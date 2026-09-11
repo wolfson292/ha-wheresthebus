@@ -47,7 +47,9 @@ async def test_setup_creates_entities(
     assert mock_config_entry.state is ConfigEntryState.LOADED
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, "12345678")})
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "12345678"), mock_config_entry.entry_id
+    )
     assert device is not None
     assert device.name == "Robin Alex Rivera"
 
@@ -647,3 +649,105 @@ async def test_a_substitute_day_is_recorded_but_not_learned_from(
         prediction = buses.predict_next_arrival(12345678)
     assert prediction is not None
     assert prediction.source == "scheduled"
+
+
+async def test_a_learned_arrival_survives_a_restart(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """An arrival learned while running must reach storage, not just memory.
+
+    ``_promote_pending`` reported no change no matter what it had learned, so
+    the caller never saved: every journey observed live was lost on the next
+    restart and only came back if the recorder still held it.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    with freeze_time_local(2026, 8, 31, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    stored = hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"]
+    arrivals = stored["data"]["riders"]["12345678"]
+    assert len(arrivals) == 1
+    assert arrivals[0]["run"] == "am"
+    assert stored["data"]["schema"] == ARRIVAL_SCHEMA
+
+
+async def test_the_estimate_re_anchors_as_the_bus_closes_in(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Yesterday's arrival time must not decide today's.
+
+    Once a rung has been crossed the estimate is that crossing plus the
+    typical leg from it, so a bus running early is reported early.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # Day one: learn a four-minute leg from the 1 mile rung.
+    with freeze_time_local(2026, 8, 31, 7, 58):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 8, 31, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    # Day two: the bus reaches the same rung ten minutes early.
+    with freeze_time_local(2026, 9, 1, 7, 48):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.basis == "approach"
+    assert prediction.anchored_at == 1.0
+    assert prediction.anchor_samples == 1
+    # 07:48 plus the four-minute leg — not yesterday's 08:02.
+    assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:52"
+
+
+async def test_a_bus_that_turns_back_out_stops_anchoring(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A pass that comes close and leaves again is not the final approach."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    with freeze_time_local(2026, 8, 31, 7, 58):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 8, 31, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 8, 31, 9, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 9, 1, 7, 40):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+    # It drifted back out well past the rung without ever reaching the stop.
+    with freeze_time_local(2026, 9, 1, 7, 44):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    # Back to the clock median rather than anchored to a crossing that lapsed.
+    assert prediction.basis == "historical"
+    assert prediction.anchored_at is None

@@ -68,4 +68,6 @@ async def test_diagnostics_expose_the_learned_ladder(
     assert arrivals["ladder"] == [3.0, 2.0, 1.0, 0.5]
     assert "schema" in arrivals
     assert "riders" in arrivals
-    assert "crossed_today" in arrivals
+    # Renamed from crossed_today: a run in flight now carries the track
+    # length and quality alongside which rungs it has crossed.
+    assert "in_flight" in arrivals

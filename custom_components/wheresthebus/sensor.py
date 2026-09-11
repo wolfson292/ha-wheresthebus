@@ -21,6 +21,8 @@ from homeassistant.util import dt as dt_util
 
 from . import WheresTheBusConfigEntry
 from .const import (
+    ATTR_ANCHOR_DISTANCE,
+    ATTR_ANCHOR_SAMPLES,
     ATTR_BUS_NUMBER,
     ATTR_OUTLIERS_EXCLUDED,
     ATTR_PREDICTION_BASIS,
@@ -37,6 +39,7 @@ from .const import (
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
     ATTR_SUBSTITUTE_BUS,
+    ATTR_WINDOW_CENTRE,
     BUS_STATUS_OPTIONS,
     SCAN_DROPOFF,
     SCAN_PICKUP,
@@ -278,6 +281,14 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             ATTR_SPREAD_MINUTES: prediction.spread,
             ATTR_OUTLIERS_EXCLUDED: prediction.outliers,
             ATTR_SCHEDULED: prediction.scheduled.strftime("%H:%M"),
+            # Both None unless the estimate is hanging on a live rung
+            # crossing, which is what separates "the bus is here, this is
+            # measured" from "this is roughly when it usually turns up".
+            ATTR_ANCHOR_DISTANCE: prediction.anchored_at,
+            ATTR_ANCHOR_SAMPLES: prediction.anchor_samples,
+            ATTR_WINDOW_CENTRE: (
+                prediction.centre.strftime("%H:%M") if prediction.centre else None
+            ),
         }
 
 
