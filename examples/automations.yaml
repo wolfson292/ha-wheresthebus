@@ -247,7 +247,7 @@
 # ride, where the bar has to fill against elapsed time rather than distance.
 #
 # The stage goes in the title, the detail in the message, and a progress bar
-# runs throughout — by distance on the approach, by elapsed time once aboard.
+# runs throughout — by distance on the approach, by elapsed time once pm_ride.
 #
 # Three things worth understanding before editing it:
 #
@@ -285,8 +285,19 @@
     p: sensor.RIDER_last_pickup
     d: sensor.RIDER_last_drop_off
     dist: sensor.RIDER_distance_to_stop
-    # Defined once rather than repeated: is the rider aboard for the ride home?
-    aboard: "{% set praw = states('sensor.RIDER_last_pickup') %}{{ praw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour >= 12 }}"
+    # "Is a journey actually happening right now" — derived ONCE here and read
+    # by every branch that needs it, rather than each re-deriving it from
+    # whatever signals were to hand. That duplication is what let three
+    # separate bugs through: a bar filling all morning when the school did not
+    # scan, a bar that lurched 78% -> 7% when two branches disagreed, and an
+    # activity counting down 61 HOURS because the target had rolled to Monday
+    # while the branch still thought the ride was in progress.
+    #
+    # The clause every one of them was missing: the arrival being counted down
+    # to has to be TODAY. That is what distinguishes a journey under way from
+    # one that has finished and left the sensor pointing at the next run.
+    am_ride: "{% set praw = states(p) %}{% set saraw = states(sa) %}{% set draw = states(d) %}{{ praw not in ['unknown','unavailable'] and saraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour < 12 and (saraw | as_datetime | as_local).date() == now().date() and as_timestamp(now()) < (saraw | as_timestamp) + 600 and (draw in ['unknown','unavailable'] or (draw | as_timestamp) < (praw | as_timestamp)) }}"
+    pm_ride: "{% set praw = states(p) %}{% set sraw = states(s) %}{{ praw not in ['unknown','unavailable'] and sraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour >= 12 and (sraw | as_datetime | as_local).date() == now().date() }}"
   triggers:
     - trigger: time
       at:
@@ -382,14 +393,8 @@
                 - condition: state
                   entity_id: sensor.RIDER_school_arrival
                   state: [unknown, unavailable]
-            # Today's morning pickup, the school scan not yet in, the arrival
-            # being counted down to still today, AND not more than ten minutes
-            # past it. Each clause closes a different way the ride branch used
-            # to keep firing after the journey was over: the school not
-            # scanning (two days in three), and the target rolling to the next
-            # school day while the bar carried on filling towards it.
             - condition: template
-              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour < 12 and (states(d) in ['unknown','unavailable'] or (states(d) | as_timestamp) < (states(p) | as_timestamp)) and (states(sa) | as_datetime | as_local).date() == now().date() and as_timestamp(now()) < (states(sa) | as_timestamp) + 600 }}"
+              value_template: "{{ am_ride }}"
           sequence:
             - action: NOTIFY_TARGET
               data:
@@ -458,13 +463,8 @@
             - condition: numeric_state
               entity_id: sensor.RIDER_distance_to_stop
               above: 0.3
-            # Today's afternoon pickup, AND the arrival being counted down to
-            # is still today. Without that second clause the branch carried on
-            # after the bus had already been home: next_arrival had rolled to
-            # Monday morning, so the "Home" branch cleared the activity and the
-            # next tick re-created it counting down 61 hours.
             - condition: template
-              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour >= 12 and (states(s) | as_datetime | as_local).date() == now().date() }}"
+              value_template: "{{ pm_ride }}"
           sequence:
             - action: NOTIFY_TARGET
               data:
@@ -659,18 +659,18 @@
             # every few minutes when the two used different scales.
             - action: NOTIFY_TARGET
               data:
-                title: "{{ 'On board — riding home' if aboard else 'Bus on the way home' }}"
+                title: "{{ 'On board — riding home' if pm_ride else 'Bus on the way home' }}"
                 message: "{{ states(dist) }} miles away · {% set left = ((states(s) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ 'arriving any moment' if left <= 0 else left ~ ' min' }} · due {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
                 data:
                   tag: school-bus-live
                   live_update: true
                   chronometer: true
                   when: "{{ states(s) | as_timestamp | int }}"
-                  progress: "{% if aboard %}{% set a = states(s) | as_timestamp %}{% set b = states(p) | as_timestamp %}{{ [[(((as_timestamp(now()) - b) / [a - b, 60] | max) * 100) | round | int, 0] | max, 100] | min }}{% else %}{{ (((3.0 - [states(dist) | float(3.0), 3.0] | min) / 3.0) * 100) | round | int }}{% endif %}"
+                  progress: "{% if pm_ride %}{% set a = states(s) | as_timestamp %}{% set b = states(p) | as_timestamp %}{{ [[(((as_timestamp(now()) - b) / [a - b, 60] | max) * 100) | round | int, 0] | max, 100] | min }}{% else %}{{ (((3.0 - [states(dist) | float(3.0), 3.0] | min) / 3.0) * 100) | round | int }}{% endif %}"
                   progress_max: 100
                   notification_icon: mdi:bus-school
-                  notification_icon_color: "{{ '#4CAF50' if aboard else '#FFC72C' }}"
-                  color: "{{ '#4CAF50' if aboard else '#FFC72C' }}"
+                  notification_icon_color: "{{ '#4CAF50' if pm_ride else '#FFC72C' }}"
+                  color: "{{ '#4CAF50' if pm_ride else '#FFC72C' }}"
                   url: /school-bus/overview
                   clickAction: /school-bus/overview
                   push:
