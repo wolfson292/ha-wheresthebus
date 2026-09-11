@@ -16,10 +16,9 @@ One device per rider on your account, with these entities:
 | `device_tracker.<rider>_bus` | Live GPS position of the bus. Drops onto a map card, and works with zone triggers. |
 | `sensor.<rider>_distance_to_stop` | Distance from the bus to the rider's stop. |
 | `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
-| `sensor.<rider>_gps_age` | Age of the last GPS fix in minutes (diagnostic). |
+| `sensor.<rider>_last_gps_fix` | When the bus was last heard from (diagnostic). |
 | `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop. |
 | `sensor.<rider>_school_arrival` | When the morning ride is expected to reach school. |
-| `sensor.<rider>_eta` | The app's ETA message, when the district publishes one. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
 | `sensor.<rider>_last_pickup` | Timestamp the rider was last picked up. |
 | `sensor.<rider>_last_drop_off` | Timestamp the rider was last dropped off. |
@@ -31,16 +30,25 @@ The scan sensors carry `scan_location`, `scan_method`, `bus_number`,
 `stop_address` and `school_name` attributes. The tracker carries the stop
 coordinates and the status colour the app uses.
 
-### Bus status and GPS age
+### Bus status and GPS freshness
 
 The API reports status as a sentence written for a human — `current`, then
 `1 min. ago`, `2 min. ago`, and so on up to `inactive` — which changes every
 single minute a bus is moving. That is unusable as an entity state and fills
 the recorder with unbounded strings, so it is split in two: `bus_status` holds
-one of three values, and `gps_age` holds the number of minutes. The original
-string is still available as the `raw_status` attribute on `bus_status`, and
-wording the parser does not recognise leaves `bus_status` unknown rather than
-discarding it.
+one of three values, and `last_gps_fix` holds the **instant** of the fix. The
+original string is still available as the `raw_status` attribute on
+`bus_status`, and wording the parser does not recognise leaves `bus_status`
+unknown rather than discarding it.
+
+The instant matters rather than an age in minutes: an age changes every minute
+the bus is running, which wrote 720 recorder rows in three days on a live
+install for a diagnostic nobody reads. Home Assistant renders a timestamp as
+"3 minutes ago" by itself. Because the API only reports the age to the nearest
+minute, a newly computed instant has to differ from the standing one by more
+than 90 seconds to replace it — enough to absorb the rounding, small enough to
+move the moment a real fix lands. A bus that has gone inactive reports no fix
+at all rather than an increasingly stale one.
 
 ### Predicted arrival
 

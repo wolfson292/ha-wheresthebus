@@ -159,6 +159,31 @@ TRACK_SAMPLE_LIMIT: Final = 80
 ANCHOR_LADDER_MILES: Final = (3.0, 2.0, 1.0, 0.5)
 ANCHOR_LADDER_KM: Final = (4.8, 3.2, 1.6, 0.8)
 
+# ``gps_age`` reported minutes-since-fix, so it changed every single minute a
+# bus was running — 720 recorder rows in three days for a diagnostic nobody
+# reads. It is replaced by the instant of the fix, which only moves when a new
+# fix actually lands and which Home Assistant renders as "3 minutes ago" by
+# itself.
+#
+# The API reports the age in whole minutes, so the fix instant is only known
+# to within a minute: computing it straight from the clock would wobble across
+# minute boundaries and churn just as badly. A newly computed instant has to
+# differ from the standing one by more than this to replace it, which absorbs
+# the quantisation while still moving the moment a real fix arrives.
+GPS_FIX_HYSTERESIS: Final = timedelta(seconds=90)
+
+# Retired entities, removed from the registry on setup so they do not linger
+# as permanently unavailable rows in the UI.
+#
+# ``gps_age`` counted minutes since the last fix, so it changed every single
+# minute a bus was running — 720 recorder rows in three days. ``last_gps_fix``
+# records the instant instead, which Home Assistant renders as "3 minutes ago"
+# without writing anything until a new fix lands.
+#
+# ``eta`` mapped the API's ``etaMsg``, which came back empty on every response
+# across every install it was watched on. It never once produced a value.
+RETIRED_SENSOR_KEYS: tuple[str, ...] = ("gps_age", "eta")
+
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 

@@ -67,12 +67,6 @@
           "inactive": "Inactive"
         }
       },
-      "gps_age": {
-        "name": "GPS age"
-      },
-      "eta": {
-        "name": "ETA"
-      },
       "last_scan": {
         "name": "Last scan"
       },
@@ -90,6 +84,9 @@
       },
       "bus_number": {
         "name": "Bus number"
+      },
+      "last_gps_fix": {
+        "name": "Last GPS fix"
       }
     }
   }

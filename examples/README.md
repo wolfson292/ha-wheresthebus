@@ -7,7 +7,7 @@ placeholders — they are meant to be copied and edited, not installed as-is.
 | File | What it is |
 | --- | --- |
 | [`dashboard.yaml`](dashboard.yaml) | Four-view dashboard: Overview, Map, History, and a Predictions page |
-| [`automations.yaml`](automations.yaml) | Four banner alerts plus a three-part iOS Live Activity |
+| [`automations.yaml`](automations.yaml) | Four banner alerts, one journey-spanning iOS Live Activity, and an app-update reminder |
 
 ## What to replace
 
@@ -15,6 +15,7 @@ placeholders — they are meant to be copied and edited, not installed as-is.
 | --- | --- |
 | `RIDER` | Your rider's entity slug, e.g. `jane_smith` for `sensor.jane_smith_next_arrival` |
 | `NOTIFY_TARGET` | Your notify service, e.g. `notify.mobile_app_janes_iphone`, or a notify group |
+| `PHONE` | Your phone's companion-app slug, e.g. `janes_iphone` for `sensor.janes_iphone_app_version` (last automation only) |
 | `/school-bus/overview` | Your dashboard path, if you name it something else |
 
 Find the slug under **Settings → Devices & Services → WheresTheBus**, on the
@@ -59,8 +60,12 @@ where the bus is, even when the prediction is.
 
 ## Requirements
 
-- The Live Activity automations need **Home Assistant 2026.7+** and iOS 17.2+.
+- The Live Activity automation needs **Home Assistant 2026.7+** and iOS 17.2+.
   The phone must complete a token handshake first: if nothing appears, open the
-  companion app and sync Live Activities in its settings.
+  companion app and sync Live Activities in its settings. That token is separate
+  from the one ordinary notifications use, and **a companion app update
+  invalidates it** — the banner alerts keep arriving while the Live Activity
+  silently stops, which looks exactly like a broken automation and is not one.
+  The last automation in the file watches the app version and reminds you.
 - The dashboard needs **2024.11+** for sections views and `grid_options`.
 - The banner alerts work on any version that runs the integration.

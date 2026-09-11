@@ -87,24 +87,11 @@ views:
       grid_options:
         columns: 12
     - type: tile
-      entity: sensor.RIDER_gps_age
-      name: GPS age
+      entity: sensor.RIDER_last_gps_fix
+      name: Last GPS fix
       icon: mdi:crosshairs-gps
       grid_options:
         columns: 12
-    - type: conditional
-      conditions:
-      - condition: state
-        entity: sensor.RIDER_eta
-        state_not: unknown
-      - condition: state
-        entity: sensor.RIDER_eta
-        state_not: unavailable
-      card:
-        type: tile
-        entity: sensor.RIDER_eta
-        name: ETA
-        icon: mdi:clock-fast
   - type: grid
     cards:
     - type: heading

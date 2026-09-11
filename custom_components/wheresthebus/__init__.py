@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
@@ -18,8 +20,12 @@ from .const import (
     CONF_STUDENT_SCAN_INTERVAL,
     DEFAULT_BUS_SCAN_INTERVAL,
     DEFAULT_STUDENT_SCAN_INTERVAL,
+    DOMAIN,
+    RETIRED_SENSOR_KEYS,
 )
 from .coordinator import WheresTheBusBusCoordinator, WheresTheBusStudentCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.DEVICE_TRACKER, Platform.SENSOR]
 
@@ -79,9 +85,30 @@ async def async_setup_entry(
     await buses.async_backfill_arrivals()
 
     entry.runtime_data = WheresTheBusData(api=api, students=students, buses=buses)
+    _remove_retired_entities(hass, entry, students.data or {})
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+def _remove_retired_entities(
+    hass: HomeAssistant, entry: WheresTheBusConfigEntry, riders: dict[int, object]
+) -> None:
+    """Drop entities this version no longer creates.
+
+    An entity that stops being created is not forgotten: it stays in the
+    registry and shows as permanently unavailable, which reads as a fault
+    rather than a deliberate removal.
+    """
+    registry = er.async_get(hass)
+    for child_id in riders:
+        for key in RETIRED_SENSOR_KEYS:
+            entity_id = registry.async_get_entity_id(
+                Platform.SENSOR, DOMAIN, f"{child_id}_{key}"
+            )
+            if entity_id is not None:
+                _LOGGER.debug("Removing retired entity %s", entity_id)
+                registry.async_remove(entity_id)
 
 
 async def async_unload_entry(

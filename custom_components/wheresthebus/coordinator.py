@@ -31,6 +31,7 @@ from .const import (
     BASIS_APPROACH,
     BASIS_HISTORICAL,
     DOMAIN,
+    GPS_FIX_HYSTERESIS,
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
     RECEDE_HYSTERESIS,
@@ -864,6 +865,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self._pending: dict[tuple[int, str, date], tuple[float, datetime]] = {}
         # (child_id, run, local date) -> the approach as it is unfolding.
         self._approach: dict[tuple[int, str, date], ApproachRecorder] = {}
+        # The standing estimate of when each bus last got a GPS fix.
+        self._gps_fix: dict[int, datetime] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -889,12 +892,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
             # ``isDistKm`` is an account-level flag repeated on every response.
             self.distance_in_km = bool(info.get("isDistKm"))
-            self._observe(
-                child_id,
-                student,
-                info.get("dist"),
-                parse_bus_status(info.get("stsMsg"))[0],
-            )
+            status, age = parse_bus_status(info.get("stsMsg"))
+            self._note_gps_fix(child_id, status, age)
+            self._observe(child_id, student, info.get("dist"), status)
 
         if self._promote_pending():
             await self._async_save_arrivals()
@@ -914,6 +914,29 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     def _arrival_threshold(self) -> float:
         """Return how close counts as an arrival, in the account's units."""
         return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
+
+    def gps_fix_time(self, child_id: int) -> datetime | None:
+        """Return when this bus was last heard from, or None if it is dark."""
+        return self._gps_fix.get(child_id)
+
+    def _note_gps_fix(self, child_id: int, status: str | None, age: int | None) -> None:
+        """Update the standing fix instant, holding it steady against jitter.
+
+        The API reports the age in whole minutes, so subtracting it from the
+        clock lands anywhere inside a one-minute band and wanders across minute
+        boundaries while the very same fix is being reported. Only a difference
+        bigger than that band is a genuinely new fix.
+        """
+        if status == STATUS_INACTIVE or age is None:
+            # Nothing is being heard, so the last known fix has stopped being a
+            # useful claim about the present.
+            self._gps_fix.pop(child_id, None)
+            return
+
+        observed = dt_util.utcnow() - timedelta(minutes=age)
+        standing = self._gps_fix.get(child_id)
+        if standing is None or abs(observed - standing) > GPS_FIX_HYSTERESIS:
+            self._gps_fix[child_id] = observed
 
     def _window_centre(self, child_id: int, run: str) -> time | None:
         """Return the learned arrival for a run, or None while it has none."""

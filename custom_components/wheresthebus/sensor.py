@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfLength, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfLength
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -101,23 +101,8 @@ BUS_SENSORS: tuple[WheresTheBusBusSensorDescription, ...] = (
         # wording the parser does not recognise.
         attrs_fn=lambda info: {ATTR_RAW_STATUS: _blank_to_none(info.get("stsMsg"))},
     ),
-    WheresTheBusBusSensorDescription(
-        key="gps_age",
-        translation_key="gps_age",
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:crosshairs-gps",
-        value_fn=lambda info: parse_bus_status(info.get("stsMsg"))[1],
-    ),
-    WheresTheBusBusSensorDescription(
-        key="eta",
-        translation_key="eta",
-        icon="mdi:clock-fast",
-        value_fn=lambda info: _blank_to_none(info.get("etaMsg")),
-    ),
 )
+
 
 STUDENT_SENSORS: tuple[WheresTheBusStudentSensorDescription, ...] = (
     WheresTheBusStudentSensorDescription(
@@ -190,6 +175,7 @@ async def async_setup_entry(
             WheresTheBusBusSensor(data.buses, data.students, child_id, description)
             for description in BUS_SENSORS
         )
+        entities.append(WheresTheBusGpsFixSensor(data.buses, data.students, child_id))
         entities.append(WheresTheBusSchoolArrivalSensor(data.students, child_id))
         entities.extend(
             WheresTheBusStudentSensor(data.students, child_id, description)
@@ -236,6 +222,36 @@ class WheresTheBusBusSensor(WheresTheBusEntity, SensorEntity):
             return None
         info = (self.coordinator.data or {}).get(self._child_id) or {}
         return self.entity_description.attrs_fn(info)
+
+
+class WheresTheBusGpsFixSensor(WheresTheBusEntity, SensorEntity):
+    """When the bus was last heard from.
+
+    A timestamp rather than an age in minutes. An age changes every minute a
+    bus is running, which wrote a recorder row a minute for a diagnostic
+    nobody reads; the instant only changes when a new fix actually arrives,
+    and the frontend renders it as "3 minutes ago" regardless.
+    """
+
+    coordinator: WheresTheBusBusCoordinator
+    _attr_translation_key = "last_gps_fix"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:crosshairs-gps"
+
+    def __init__(
+        self,
+        coordinator: WheresTheBusBusCoordinator,
+        students: WheresTheBusStudentCoordinator,
+        child_id: int,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(coordinator, students, child_id, "last_gps_fix")
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the instant of the last fix, or None while the bus is dark."""
+        return self.coordinator.gps_fix_time(self._child_id)
 
 
 class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):

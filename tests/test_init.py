@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 from freezegun import freeze_time
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -65,7 +67,7 @@ async def test_setup_creates_entities(
 async def test_bus_sensors(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
 ) -> None:
-    """Live-position sensors report distance, status and ETA."""
+    """Live-position sensors report distance and status."""
     hass.config.units = US_CUSTOMARY_SYSTEM
     await setup_entry(hass, mock_config_entry)
 
@@ -81,10 +83,9 @@ async def test_bus_sensors(
     assert status is not None
     assert status.state == "current"
 
-    # etaMsg is an empty string in the payload and must not become "".
-    eta = hass.states.get("sensor.robin_alex_rivera_eta")
-    assert eta is not None
-    assert eta.state == "unknown"
+    # etaMsg came back empty on every response ever observed, so the sensor
+    # that mapped it is gone rather than permanently unknown.
+    assert hass.states.get("sensor.robin_alex_rivera_eta") is None
 
 
 async def test_distance_converts_for_a_metric_household(
@@ -170,10 +171,10 @@ async def test_unload_entry(
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
 
 
-async def test_gps_age_sensor(
+async def test_gps_fix_sensor(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
 ) -> None:
-    """The GPS age is exposed as minutes rather than as prose."""
+    """The GPS freshness is a status plus the instant of the fix."""
     await setup_entry(hass, mock_config_entry)
 
     status = hass.states.get("sensor.robin_alex_rivera_bus_status")
@@ -182,33 +183,68 @@ async def test_gps_age_sensor(
     assert status.attributes["raw_status"] == "current"
     assert status.attributes["options"] == ["current", "stale", "inactive"]
 
-    age = hass.states.get("sensor.robin_alex_rivera_gps_age")
-    assert age is not None
-    assert age.state == "0"
-    assert age.attributes["unit_of_measurement"] == "min"
+    # The age in minutes wrote a recorder row a minute; the instant replaced it.
+    assert hass.states.get("sensor.robin_alex_rivera_gps_age") is None
+    fix = hass.states.get("sensor.robin_alex_rivera_last_gps_fix")
+    assert fix is not None
+    assert fix.attributes["device_class"] == "timestamp"
 
 
-async def test_stale_gps_does_not_churn_the_status(
+async def test_stale_gps_does_not_churn_the_status_or_the_fix(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
 ) -> None:
-    """Minute-by-minute GPS ageing moves the age, not the status."""
+    """A bus going quiet must not write a new state every minute.
+
+    While the same fix is being reported the age climbs and the clock climbs
+    with it, so the instant of the fix does not move. The old age sensor
+    changed on every one of these — 720 recorder rows in three days on a live
+    install, for a diagnostic nobody reads.
+    """
     await setup_entry(hass, mock_config_entry)
     buses = mock_config_entry.runtime_data.buses
 
     seen_status: set[str] = set()
+    seen_fix: set[str] = set()
+    # The clock advances in step with the age: one fix, reported four times.
     for minute in (1, 2, 7, 14):
-        mock_api.async_get_rider_info.return_value = {
-            **RIDER_INFO,
-            "stsMsg": f"{minute} min. ago",
-        }
+        with freeze_time_local(2026, 9, 11, 8, minute):
+            mock_api.async_get_rider_info.return_value = {
+                **RIDER_INFO,
+                "stsMsg": f"{minute} min. ago",
+            }
+            await buses.async_refresh()
+            await hass.async_block_till_done()
+
+        seen_status.add(hass.states.get("sensor.robin_alex_rivera_bus_status").state)
+        seen_fix.add(hass.states.get("sensor.robin_alex_rivera_last_gps_fix").state)
+
+    assert seen_status == {"stale"}
+    assert len(seen_fix) == 1
+
+    # A genuinely new fix does move it.
+    with freeze_time_local(2026, 9, 11, 8, 15):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "stsMsg": "current"}
         await buses.async_refresh()
         await hass.async_block_till_done()
 
-        seen_status.add(hass.states.get("sensor.robin_alex_rivera_bus_status").state)
-        assert hass.states.get("sensor.robin_alex_rivera_gps_age").state == str(minute)
+    assert (
+        hass.states.get("sensor.robin_alex_rivera_last_gps_fix").state not in seen_fix
+    )
 
-    # Four different API strings collapsed to a single sensor state.
-    assert seen_status == {"stale"}
+
+async def test_a_dark_bus_reports_no_fix(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Once the bus goes inactive the last known fix stops being a claim."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "stsMsg": "inactive"}
+    await buses.async_refresh()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.robin_alex_rivera_bus_status").state == "inactive"
+    assert hass.states.get("sensor.robin_alex_rivera_last_gps_fix").state == "unknown"
 
 
 async def test_unrecognised_status_keeps_the_raw_string(
@@ -751,3 +787,38 @@ async def test_a_bus_that_turns_back_out_stops_anchoring(
     # Back to the clock median rather than anchored to a crossing that lapsed.
     assert prediction.basis == "historical"
     assert prediction.anchored_at is None
+
+
+async def test_retired_entities_are_removed_from_the_registry(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """An entity that is no longer created must not linger as unavailable.
+
+    Dropping a sensor does not forget it: the registry keeps the row and the
+    UI shows it as permanently unavailable, which reads as a fault rather
+    than a deliberate removal.
+    """
+    mock_config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    for key in ("gps_age", "eta"):
+        registry.async_get_or_create(
+            Platform.SENSOR,
+            DOMAIN,
+            f"12345678_{key}",
+            config_entry=mock_config_entry,
+            suggested_object_id=f"robin_alex_rivera_{key}",
+        )
+
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (
+        registry.async_get_entity_id(Platform.SENSOR, DOMAIN, "12345678_gps_age")
+        is None
+    )
+    assert registry.async_get_entity_id(Platform.SENSOR, DOMAIN, "12345678_eta") is None
+    # The replacement is there in its place.
+    assert (
+        registry.async_get_entity_id(Platform.SENSOR, DOMAIN, "12345678_last_gps_fix")
+        is not None
+    )
