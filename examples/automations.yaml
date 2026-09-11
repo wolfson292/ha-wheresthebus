@@ -382,12 +382,14 @@
                 - condition: state
                   entity_id: sensor.RIDER_school_arrival
                   state: [unknown, unavailable]
-            # Today's morning pickup, the school scan not yet in, AND not more
-            # than ten minutes past the predicted school arrival. That last
-            # clause is what stops it running all morning when the school
-            # never scans — which happened on two days out of three.
+            # Today's morning pickup, the school scan not yet in, the arrival
+            # being counted down to still today, AND not more than ten minutes
+            # past it. Each clause closes a different way the ride branch used
+            # to keep firing after the journey was over: the school not
+            # scanning (two days in three), and the target rolling to the next
+            # school day while the bar carried on filling towards it.
             - condition: template
-              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour < 12 and (states(d) in ['unknown','unavailable'] or (states(d) | as_timestamp) < (states(p) | as_timestamp)) and as_timestamp(now()) < (states(sa) | as_timestamp) + 600 }}"
+              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour < 12 and (states(d) in ['unknown','unavailable'] or (states(d) | as_timestamp) < (states(p) | as_timestamp)) and (states(sa) | as_datetime | as_local).date() == now().date() and as_timestamp(now()) < (states(sa) | as_timestamp) + 600 }}"
           sequence:
             - action: NOTIFY_TARGET
               data:
@@ -456,8 +458,13 @@
             - condition: numeric_state
               entity_id: sensor.RIDER_distance_to_stop
               above: 0.3
+            # Today's afternoon pickup, AND the arrival being counted down to
+            # is still today. Without that second clause the branch carried on
+            # after the bus had already been home: next_arrival had rolled to
+            # Monday morning, so the "Home" branch cleared the activity and the
+            # next tick re-created it counting down 61 hours.
             - condition: template
-              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour >= 12 }}"
+              value_template: "{{ (states(p) | as_datetime | as_local).date() == now().date() and (states(p) | as_datetime | as_local).hour >= 12 and (states(s) | as_datetime | as_local).date() == now().date() }}"
           sequence:
             - action: NOTIFY_TARGET
               data:
