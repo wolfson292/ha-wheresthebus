@@ -77,6 +77,20 @@ not have been learned live. This runs once, is skipped as soon as any final
 leg has been recorded, and is silently skipped entirely where the recorder is
 not enabled.
 
+A prediction only lands on a day the bus is believed to run: weekdays, plus
+any day an arrival has actually been observed on. Without that, a Friday
+evening predicted Saturday morning. It is learned rather than hardcoded so a
+route that genuinely runs at the weekend keeps working once it has been seen
+doing so — but not inferred the other way round, because a rider who has not
+happened to ride on a Wednesday yet must not lose Wednesdays.
+
+A run already under way is **rebuilt from the recorder on startup**. The
+closest approach so far and the rung crossings live only in memory, so
+restarting mid-run left the integration blind to everything that had already
+happened — and the bus passing by on its way elsewhere then read as a fresh
+approach, re-anchoring the estimate and very nearly recording a second arrival
+for the day.
+
 The historical part is the median of **every retained arrival** for that run,
 not the most recent one — a single bus stuck behind a train should not drag
 tomorrow's prediction with it, and the median ignores an outlier that a mean

@@ -30,6 +30,7 @@ from .const import (
     ARRIVAL_THRESHOLD_MILES,
     BASIS_APPROACH,
     BASIS_HISTORICAL,
+    DAYS_AHEAD,
     DOMAIN,
     GPS_FIX_HYSTERESIS,
     OUTLIER_FLOOR_MINUTES,
@@ -41,6 +42,7 @@ from .const import (
     SCAN_DROPOFF,
     SCAN_HISTORY_LIMIT,
     SCAN_PICKUP,
+    SCHOOL_WEEK,
     SOURCE_LEARNED,
     SOURCE_SCHEDULED,
     STATUS_CURRENT,
@@ -945,12 +947,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     def _observe(
         self, child_id: int, student: Student, dist: Any, status: str | None = None
     ) -> None:
-        """Fold one position reading into whichever run is currently active.
-
-        The approach is watched from well before the arrival window opens, so
-        the outer rungs are recorded rather than missed; only readings inside
-        the tighter arrival window can count as the arrival itself.
-        """
+        """Fold the current position reading into whichever run is active."""
         if dist is None:
             return
         try:
@@ -958,30 +955,89 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         except (TypeError, ValueError):
             return
 
-        now = dt_util.utcnow()
-        local_now = dt_util.as_local(now)
         # Anything but a current fix means the distance behind it was
         # extrapolated, which is what the stale count is recording.
-        fresh = status == STATUS_CURRENT
+        self._fold_reading(
+            child_id,
+            student,
+            dt_util.utcnow(),
+            distance,
+            fresh=status == STATUS_CURRENT,
+        )
+
+    def _fold_reading(
+        self,
+        child_id: int,
+        student: Student,
+        when: datetime,
+        distance: float,
+        *,
+        fresh: bool = True,
+    ) -> None:
+        """Fold one distance reading, live or replayed, into its run.
+
+        The approach is watched from well before the arrival window opens, so
+        the outer rungs are recorded rather than missed; only readings inside
+        the tighter arrival window can count as the arrival itself.
+
+        ``when`` is a parameter rather than the clock because a restart has to
+        replay the part of a run it missed, and a replayed reading has to land
+        exactly where the live one would have.
+        """
+        local = dt_util.as_local(when)
         for run, scheduled in (
             (RUN_AM, student.am_scheduled),
             (RUN_PM, student.pm_scheduled),
         ):
             centre = self._window_centre(child_id, run)
-            watching = approach_window(scheduled, now, centre)
-            if watching is None or not watching[0] <= local_now <= watching[1]:
+            watching = approach_window(scheduled, when, centre)
+            if watching is None or not watching[0] <= local <= watching[1]:
                 continue
-            key = (child_id, run, local_now.date())
+            key = (child_id, run, local.date())
             self._approach.setdefault(key, ApproachRecorder()).sample(
-                self._ladder, now, distance, self._arrival_threshold, fresh=fresh
+                self._ladder, when, distance, self._arrival_threshold, fresh=fresh
             )
 
-            arriving = run_window(scheduled, now, centre)
-            if arriving is None or not arriving[0] <= local_now <= arriving[1]:
+            arriving = run_window(scheduled, when, centre)
+            if arriving is None or not arriving[0] <= local <= arriving[1]:
                 continue
             best = self._pending.get(key)
             if best is None or distance < best[0]:
-                self._pending[key] = (distance, now)
+                self._pending[key] = (distance, when)
+
+    async def async_restore_in_flight(self) -> None:
+        """Rebuild a run this instance restarted in the middle of.
+
+        The closest approach so far and the rung crossings live only in memory,
+        so a restart during a run left the integration blind to everything that
+        had already happened. The bus then wandered past on its way elsewhere
+        and was read as a fresh approach: on 11 Sep a restart at 17:44, minutes
+        after the bus had been and gone, re-anchored the estimate to a pass
+        four miles out and would have recorded it as a second arrival.
+
+        The distance sensor recorded all of it, so it is replayed through the
+        same folding the live path uses.
+        """
+        students = self.students.data or {}
+        for child_id, student in students.items():
+            entity_id = distance_entity_id(self.hass, child_id)
+            if entity_id is None:
+                continue
+            try:
+                rows = await async_distance_history(self.hass, entity_id, days=1)
+            except Exception:
+                _LOGGER.exception("Could not replay today's %s history", entity_id)
+                continue
+
+            for state in rows:
+                try:
+                    distance = float(state.state)
+                except (TypeError, ValueError):
+                    continue
+                self._fold_reading(child_id, student, state.last_updated, distance)
+
+        if self._approach:
+            _LOGGER.debug("Restored %d run(s) already in progress", len(self._approach))
 
     def _promote_pending(self) -> bool:
         """Turn closed windows into arrivals. Returns True if anything changed."""
@@ -1192,6 +1248,10 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         # Older stores were a bare rider mapping, with no schema recorded.
         if "riders" in stored:
             self._schema = int(stored.get("schema") or 0)
+            # Which units the ladder was measured in. Restored before the
+            # first poll can report it, because replaying a run this instance
+            # restarted into needs the right rungs and cannot wait.
+            self.distance_in_km = bool(stored.get("km"))
             stored = stored.get("riders") or {}
         for raw_child_id, arrivals in stored.items():
             try:
@@ -1223,6 +1283,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         await self._store.async_save(
             {
                 "schema": self._schema,
+                "km": self.distance_in_km,
                 "riders": {
                     str(child_id): [
                         {
@@ -1290,14 +1351,15 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 continue
 
             predicted_time = learned or scheduled
-            for day_offset in (0, 1):
+            service = self._service_days(child_id)
+            for day_offset in range(DAYS_AHEAD):
                 moment = (local_now + timedelta(days=day_offset)).replace(
                     hour=predicted_time.hour,
                     minute=predicted_time.minute,
                     second=0,
                     microsecond=0,
                 )
-                if moment > local_now:
+                if moment > local_now and moment.weekday() in service:
                     candidates.append(
                         ArrivalPrediction(
                             run=run,
@@ -1352,6 +1414,24 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         if estimate <= local_now:
             return None
         return estimate, self._ladder[rung], len(legs)
+
+    def _service_days(self, child_id: int) -> frozenset[int]:
+        """Return the weekdays this rider's bus is believed to run.
+
+        Weekdays by default, plus any day an arrival has actually been seen on.
+        A Friday evening prediction used to read "tomorrow 08:01", because the
+        search only looked one day ahead and nothing knew about weekends.
+
+        Learned rather than hardcoded, so a route that genuinely runs at the
+        weekend keeps working once it has been observed doing so. The default
+        cannot be inferred the other way round: a rider who happens not to
+        have ridden on a Wednesday yet must not lose Wednesdays.
+        """
+        seen = {
+            dt_util.as_local(item.arrival).weekday()
+            for item in self._arrivals.get(child_id, [])
+        }
+        return frozenset(seen | set(range(SCHOOL_WEEK)))
 
     def _learned_time(
         self, child_id: int, run: str

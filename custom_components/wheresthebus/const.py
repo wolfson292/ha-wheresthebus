@@ -184,6 +184,13 @@ GPS_FIX_HYSTERESIS: Final = timedelta(seconds=90)
 # across every install it was watched on. It never once produced a value.
 RETIRED_SENSOR_KEYS: tuple[str, ...] = ("gps_age", "eta")
 
+# Monday to Friday, as weekday() numbers them. Predictions skip days outside
+# the run's service days, so a Friday evening does not predict Saturday.
+SCHOOL_WEEK: Final = 5
+# How far ahead to look for the next run. A Friday evening has to reach
+# Monday, and a week covers any holiday the history has taught us about.
+DAYS_AHEAD: Final = 8
+
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 

@@ -79,6 +79,9 @@ async def async_setup_entry(
         entry.options.get(CONF_BUS_SCAN_INTERVAL, DEFAULT_BUS_SCAN_INTERVAL),
     )
     await buses.async_load_arrivals()
+    # A run already under way has to be rebuilt before the first poll lands, or
+    # the bus passing by on its way elsewhere reads as a fresh approach.
+    await buses.async_restore_in_flight()
     await buses.async_config_entry_first_refresh()
     # The distance sensor has been recording all along, so past arrivals can be
     # recovered rather than waiting a week to relearn them.

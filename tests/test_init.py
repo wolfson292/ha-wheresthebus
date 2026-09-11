@@ -3,15 +3,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun import freeze_time
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -822,3 +822,110 @@ async def test_retired_entities_are_removed_from_the_registry(
         registry.async_get_entity_id(Platform.SENSOR, DOMAIN, "12345678_last_gps_fix")
         is not None
     )
+
+
+async def test_a_friday_evening_predicts_monday_not_saturday(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """The search used to look one day ahead and know nothing about weekends."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # 11 Sep 2026 is a Friday; ask after that day's runs are over.
+    with freeze_time_local(2026, 9, 11, 20, 0):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    arrival = dt_util.as_local(prediction.arrival)
+    assert arrival.strftime("%a %H:%M") == "Mon 07:56"
+
+
+async def test_a_weekend_run_is_predicted_once_it_has_been_seen(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """Weekdays are the default, not a rule — an observed Saturday counts.
+
+    Inferring service days purely from history would be worse: a rider who
+    has not happened to ride on a Wednesday yet must not lose Wednesdays.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # A Saturday arrival, observed and learned.
+    with freeze_time_local(2026, 9, 12, 8, 2):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 9, 12, 9, 30):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 9, 11, 20, 0):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert dt_util.as_local(prediction.arrival).strftime("%a") == "Sat"
+
+
+async def test_a_restart_mid_run_rebuilds_what_it_missed(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A bus that has already been and gone must not look like a fresh approach.
+
+    The closest approach and the rung crossings live only in memory. After a
+    restart on 11 Sep at 17:44 — minutes after the bus had arrived — a pass
+    four miles out re-anchored the estimate and would have been recorded as a
+    second arrival for the day.
+    """
+    readings = [
+        ("17:05:00", "2.7"),
+        ("17:13:00", "2.8"),
+        ("17:16:00", "0.9"),
+        ("17:20:00", "0.1"),
+    ]
+    history = [
+        State(
+            "sensor.robin_alex_rivera_distance_to_stop",
+            value,
+            last_updated=datetime.fromisoformat(f"2026-09-11T{clock}").replace(
+                tzinfo=dt_util.get_default_time_zone()
+            ),
+        )
+        for clock, value in readings
+    ]
+
+    # The distance sensor is looked up in the registry, which on a real
+    # restart is already populated from the previous run.
+    mock_config_entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        Platform.SENSOR,
+        DOMAIN,
+        "12345678_distance_to_stop",
+        config_entry=mock_config_entry,
+        suggested_object_id="robin_alex_rivera_distance_to_stop",
+    )
+
+    with (
+        freeze_time_local(2026, 9, 11, 17, 44),
+        patch(
+            "custom_components.wheresthebus.coordinator.async_distance_history",
+            AsyncMock(return_value=history),
+        ),
+    ):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+
+        # The bus wanders back past on its way elsewhere.
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 4.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+        prediction = buses.predict_next_arrival(12345678)
+
+    # The replayed run already reached the stop, so nothing re-anchors and the
+    # 0.1 mile arrival stands rather than being replaced by the 4 mile pass.
+    assert prediction is not None
+    assert prediction.anchored_at is None
+    key = (12345678, "pm", date(2026, 9, 11))
+    assert buses._approach[key].arrived is True
+    assert buses._pending[key][0] == pytest.approx(0.1)

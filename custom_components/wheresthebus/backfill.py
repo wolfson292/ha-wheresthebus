@@ -32,13 +32,19 @@ def distance_entity_id(hass: HomeAssistant, child_id: int) -> str | None:
     )
 
 
-async def async_distance_history(hass: HomeAssistant, entity_id: str) -> list[State]:
+async def async_distance_history(
+    hass: HomeAssistant, entity_id: str, days: int = BACKFILL_DAYS
+) -> list[State]:
     """Return recent distance readings, or nothing if unavailable.
 
     Returns an empty list when the recorder is not set up rather than raising:
     it is optional, some installations run without it, and a missing history
     should cost the estimate a few days of learning, not the integration its
     startup.
+
+    ``days`` is how far back to look. The default covers the one-off replay of
+    past arrivals; a restart mid-run asks for just today, to rebuild the
+    approach it was halfway through watching.
     """
     if "recorder" not in hass.config.components:
         _LOGGER.debug("Recorder not loaded; skipping history replay")
@@ -52,7 +58,7 @@ async def async_distance_history(hass: HomeAssistant, entity_id: str) -> list[St
     )
 
     end = dt_util.utcnow()
-    start = end - timedelta(days=BACKFILL_DAYS)
+    start = end - timedelta(days=days)
 
     rows = await get_instance(hass).async_add_executor_job(
         partial(
