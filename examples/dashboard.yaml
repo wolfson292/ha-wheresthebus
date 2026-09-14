@@ -13,7 +13,8 @@
 # scratch. Open it, then three-dots > Raw configuration editor, and paste
 # everything below this header.
 #
-# Needs Home Assistant 2024.11+ for sections views and grid_options.
+# Needs Home Assistant 2024.11+ for sections views and grid_options, and
+# integration 2.1.0+ for sensor.RIDER_journey.
 
 views:
 - title: Overview
@@ -22,6 +23,11 @@ views:
   type: sections
   max_columns: 3
   badges:
+  # The stage first: it is the one thing worth seeing at a glance.
+  - type: entity
+    entity: sensor.RIDER_journey
+    show_name: true
+    name: Now
   - type: entity
     entity: sensor.RIDER_next_arrival
     show_name: true
@@ -42,6 +48,34 @@ views:
   - type: grid
     column_span: 2
     cards:
+    - type: heading
+      heading: Right now
+      heading_style: title
+      icon: mdi:bus-marker
+    # Reads as words — "Riding home", not "from_school" — because the
+    # integration ships state translations for the enum. So this card needs no
+    # wording of its own, and cannot drift out of step with the notifications.
+    - type: tile
+      entity: sensor.RIDER_journey
+      name: Stage
+      icon: mdi:bus-marker
+      grid_options:
+        columns: full
+    # The same progress the Live Activity shows, from the same attribute.
+    # Home Assistant has no native progress-bar card, and a text bar needs no
+    # HACS install.
+    - type: markdown
+      text_only: true
+      content: "{% set j = 'sensor.RIDER_journey' %}{% set p = state_attr(j, 'progress')
+        %}{% set t = state_attr(j, 'target') %}{% if p is not none %}{% set filled
+        = (p / 5) | round | int %}`{{ '█' * filled }}{{ '░' * (20 - filled) }}` **{{
+        p }}%**{% if t %}\n\nDue {{ (t | as_datetime | as_local).strftime('%-I:%M
+        %p') }}{% set left = ((t | as_timestamp - as_timestamp(now())) / 60) | round
+        | int %}{{ ' — arriving any moment' if left <= 0 else ' — ' ~ left ~ ' min'
+        }}{% endif %}{% else %}No run under way.{% endif %}"
+      grid_options:
+        columns: full
+        rows: auto
     - type: heading
       heading: Where is the bus
       heading_style: title

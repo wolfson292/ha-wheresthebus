@@ -6,7 +6,7 @@ placeholders — they are meant to be copied and edited, not installed as-is.
 
 | File | What it is |
 | --- | --- |
-| [`dashboard.yaml`](dashboard.yaml) | Four-view dashboard: Overview, Map, History, and a Predictions page |
+| [`dashboard.yaml`](dashboard.yaml) | Four-view dashboard: Overview (led by the journey stage), Map, History, and a Predictions page |
 | [`automations.yaml`](automations.yaml) | Four banner alerts, one journey-spanning iOS Live Activity driven by `sensor.RIDER_journey`, and an app-update reminder |
 
 ## What to replace
@@ -102,5 +102,9 @@ appears but a pushed one does not, the budget is the problem, not the device.
   invalidates it** — the banner alerts keep arriving while the Live Activity
   silently stops, which looks exactly like a broken automation and is not one.
   The last automation in the file watches the app version and reminds you.
-- The dashboard needs **2024.11+** for sections views and `grid_options`.
+- The dashboard needs **2024.11+** for sections views and `grid_options`, and
+  integration **2.1.0+** for `sensor.RIDER_journey`. Its stage tile and badge
+  read as words rather than raw enum values because the integration ships
+  state translations, so neither carries wording that could drift out of
+  step with the notifications.
 - The banner alerts work on any version that runs the integration.
