@@ -1045,3 +1045,47 @@ async def test_the_prediction_reports_an_earliest_and_a_latest(
     sensor = hass.states.get("sensor.robin_alex_rivera_next_arrival")
     assert sensor is not None
     assert sensor.attributes["uncertainty_minutes"] == 2
+
+
+async def test_the_replay_reruns_when_the_store_holds_no_route(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A schema number claiming the data exists is not the data existing.
+
+    3.0.0's backfill ran, marked the schema current and saved — and a merge
+    bug then discarded every route track it had recovered. The store was left
+    saying "current schema, has legs" while holding no positions, so the guard
+    skipped the replay on every later start and the fix could never land.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    {
+                        "run": "am",
+                        "at": "2026-08-31T12:02:00+00:00",
+                        "closest": 0.0,
+                        "legs": {"0": 600, "1": 360, "2": 240, "3": 60},
+                        "track": [],
+                    }
+                ]
+            },
+        },
+    }
+
+    replayed = AsyncMock(return_value=[])
+    with patch(
+        "custom_components.wheresthebus.coordinator.async_position_history", replayed
+    ):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    # Legs and a current schema are not enough: with no positions stored, the
+    # replay has to run rather than assume its work was already done.
+    assert replayed.called

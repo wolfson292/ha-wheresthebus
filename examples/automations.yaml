@@ -311,11 +311,31 @@
     - trigger: time_pattern
       minutes: /5
       id: tick
+    # A chronometer wound to a time still ahead counts DOWN to it, then keeps
+    # going UPWARD once it passes. The five-minute refresh normally corrects
+    # that and the journey ending clears the card — but Home Assistant
+    # restarting through both leaves the last push on the phone, ticking
+    # upward with nobody minding it. An activity that survived a restart is by
+    # definition describing a journey nothing is watching any more.
+    - trigger: homeassistant
+      event: start
+      id: startup
   conditions:
     - condition: time
       weekday: [mon, tue, wed, thu, fri]
   actions:
     - choose:
+        - alias: Home Assistant restarted — retire anything left running
+          conditions:
+            - condition: trigger
+              id: startup
+          sequence:
+            - action: NOTIFY_TARGET
+              data:
+                message: clear_notification
+                data:
+                  tag: "{{ now().strftime('%Y%m%d') }}-{{ 'am' if now().hour < 12 else 'pm' }}"
+
         - alias: The journey ended — clear the activity it was driving
           conditions:
             - condition: trigger
@@ -352,7 +372,9 @@
                   # A chronometer left running past its target counts UPWARD,
                   # turning a late bus into a growing "1:40:51".
                   chronometer: "{{ target is not none and mins > 0 }}"
-                  when: "{{ (target | as_timestamp | int) if target else (as_timestamp(now()) | int) }}"
+                  # Only ever wound to a target still AHEAD. Wound to one
+                  # already past, a chronometer counts upward.
+                  when: "{{ (target | as_timestamp | int) if (target and mins > 0) else (as_timestamp(now()) | int) }}"
                   progress: "{{ progress if progress is not none else 0 }}"
                   progress_max: 100
                   notification_icon: "{{ glyph }}"

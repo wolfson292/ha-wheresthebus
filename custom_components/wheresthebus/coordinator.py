@@ -1444,14 +1444,28 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     async def async_backfill_arrivals(self) -> None:
         """Recover past arrivals from the recorder, once.
 
-        Skipped once the stored history was captured under the current
-        recording scheme. Checking merely that some final leg exists is not
-        enough: 1.7.0 widened one anchor into a four-rung ladder, and history
-        holding only the old single rung would have been left as it was and
-        behaved exactly as its predecessor did.
+        Skipped once the stored history actually holds what this version
+        needs — which is not the same question as whether the schema number
+        matches, and the difference has now bitten twice.
+
+        1.7.0 widened one anchor into a four-rung ladder, and history holding
+        only the old single rung would have been left alone and behaved
+        exactly as its predecessor did. So the check also looks for legs.
+
+        3.0.0 went further wrong. Its backfill ran, marked the schema current
+        and saved — but a merge that ranked records by rung count alone then
+        discarded every route track it had just recovered. The store was left
+        saying "current schema, has legs" while holding no positions at all,
+        so the guard skipped the backfill on every later start and the fix in
+        3.0.2 could never take effect. Asking for the data itself, rather than
+        for a version number claiming the data exists, is the only form of
+        this check that cannot strand itself.
         """
-        complete = self._schema >= ARRIVAL_SCHEMA and any(
-            item.legs for arrivals in self._arrivals.values() for item in arrivals
+        stored = [item for arrivals in self._arrivals.values() for item in arrivals]
+        complete = (
+            self._schema >= ARRIVAL_SCHEMA
+            and any(item.legs for item in stored)
+            and any(item.track for item in stored)
         )
         if complete:
             return
