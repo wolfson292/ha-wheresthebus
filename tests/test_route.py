@@ -4,6 +4,12 @@ The cases here are the ones straight-line distance gets wrong. A school bus is
 not travelling towards the stop: it serves other children, turns round in
 cul-de-sacs, and spends long stretches driving directly away. Measured as
 distance, every one of those looks like a setback or a stall.
+
+Every coordinate below is invented, and shares the fictional town used by
+tests/fixtures.py. Only the shape of the manoeuvre is drawn from life. Real
+positions must never appear here: a few miles of turns is a fingerprint that
+can be matched against the road network and put back on the map, and the
+route this integration follows is a child's daily journey to and from school.
 """
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -13,8 +19,9 @@ from custom_components.wheresthebus.route import haversine_miles, nearest_remain
 
 RADIUS = 0.25
 
-# Four samples thirty seconds apart, recorded on 11 Sep: west, west, halted,
-# then back east. A U-turn, thirteen minutes before the bus reached the stop.
+# Six samples thirty seconds apart: south, west, west, halted, then back east.
+# A U-turn, a quarter of an hour before the bus reaches the stop, followed by
+# the stop itself at zero seconds remaining.
 UTURN: list[tuple[int, float, float]] = [
     (900, 40.7350, -74.0200),
     (870, 40.7300, -74.0200),
@@ -27,7 +34,7 @@ UTURN: list[tuple[int, float, float]] = [
 
 
 def test_haversine_matches_a_known_pair() -> None:
-    """Two consecutive samples from the real record, thirty seconds apart."""
+    """Two consecutive samples, thirty seconds apart."""
     miles = haversine_miles(40.7300, -74.0230, 40.7300, -74.0260)
 
     assert round(miles, 2) == 0.16
@@ -64,7 +71,7 @@ def test_a_bus_off_the_route_says_so_rather_than_guessing() -> None:
     pretend to know, instead of confidently reporting a time derived from
     nothing.
     """
-    assert nearest_remaining(UTURN, 26.60, -81.99, None, RADIUS) is None
+    assert nearest_remaining(UTURN, 40.85, -74.20, None, RADIUS) is None
 
 
 def test_standing_still_does_not_move_the_answer() -> None:
@@ -88,4 +95,4 @@ def test_standing_still_does_not_move_the_answer() -> None:
 
 def test_an_empty_track_says_nothing() -> None:
     """A journey recorded before positions were kept cannot be matched."""
-    assert nearest_remaining([], 26.48, -81.86, None, RADIUS) is None
+    assert nearest_remaining([], 40.73, -74.02, None, RADIUS) is None

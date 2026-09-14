@@ -67,7 +67,8 @@ the stage to wording and colour and sends one push.
 That division matters. The Live Activity here was previously ten branches,
 each deciding independently whether a journey was under way and how far
 through it was, and four separate faults came out of the gaps between them: a
-bar that filled for two hours after she reached school, a bar lurching between
+bar that filled for two hours after the rider reached school, a bar lurching
+between
 78% and 7%, a title and colour that flickered, and a countdown that ran 61
 hours to the following Monday. None was hard. Each was a gap in one branch
 that the other nine could not see, somewhere no test could reach.

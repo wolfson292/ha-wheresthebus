@@ -362,8 +362,9 @@ LADDER = (3.0, 2.0, 1.0, 0.5)
 
 
 # The stop these fixtures are built around, and the earth radius the haversine
-# uses, so a wanted distance can be turned into a position exactly.
-_STOP = (40.7155, -74.0020)
+# uses, so a wanted distance can be turned into a position exactly. Invented,
+# like every other coordinate in the tests — see tests/fixtures.py.
+_STOP = (40.71550, -74.00200)
 _EARTH_RADIUS_MILES = 3958.7613
 
 

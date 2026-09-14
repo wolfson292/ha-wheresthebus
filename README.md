@@ -104,7 +104,7 @@ never update yesterday's.
 This exists because the same question was previously answered independently
 in ten branches of a notification automation, each from whatever signals were
 nearest to hand. Four faults came out of the gaps between them: a progress bar
-that filled for two hours after she reached school, because that branch's only
+that filled for two hours after the rider reached school, because that branch's only
 stop was a scan the school skips about two days in three; a bar that lurched
 between 78% and 7%, because two branches measured progress on different
 scales; a title and colour that flickered, because they were chosen in two
@@ -119,7 +119,7 @@ instant of a school day it happens at.
 Ordering is the part worth knowing: having arrived somewhere outranks being on
 the way there, and being aboard outranks the bus merely being nearby. Without
 that last rule an afternoon approach describes a rider already on the bus as
-though she were still waiting at the kerb for it.
+though they were still waiting at the kerb for it.
 
 ### Predicted arrival
 
@@ -234,8 +234,8 @@ Three things make the observations trustworthy:
 A drop-off scan says the rider got off the bus, not *where*. Which it was
 depends on the run: in the morning it is the school, in the afternoon the home
 stop. The afternoon leg went unscanned for the first eight days observed here,
-and building on that produced an activity announcing "Arrived at school" as she
-stepped off the bus outside the house.
+and building on that produced an activity announcing "Arrived at school" as the
+rider stepped off the bus outside the house.
 
 `anchored_at` and `anchor_samples` report which rung the live estimate is
 hanging on and how many past journeys back it; both are absent when the

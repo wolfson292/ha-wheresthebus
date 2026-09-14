@@ -233,11 +233,11 @@ def test_the_journey_id_does_not_change_mid_ride() -> None:
 
 
 def test_an_afternoon_drop_off_scan_means_home_not_school() -> None:
-    """A drop-off scan says she got off the bus, not where.
+    """A drop-off scan says the rider got off the bus, not where.
 
     Which it was depends on the run. Reading every drop-off as the school
-    announced "Arrived at school — dropped off safely" as she stepped off the
-    bus outside the house.
+    announced "Arrived at school — dropped off safely" as the rider stepped off
+    the bus outside the house.
     """
     journey = _stage(
         now=_at(17, 22),

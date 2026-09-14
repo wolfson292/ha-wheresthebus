@@ -1,13 +1,13 @@
 """Work out which stage of the school run a rider is currently in.
 
 This exists because the same question — "is a journey happening, and how far
-through it is she" — was being answered independently in ten branches of a
+through it" — was being answered independently in ten branches of a
 Home Assistant automation, from whatever signals were nearest to hand. Four
 separate faults came out of that, each one a gap in a single branch that the
 other nine could not see:
 
-* the morning progress bar filled for two hours after she was already in
-  class, because that branch's only stop was a school scan that fails about
+* the morning progress bar filled for two hours after the rider was already
+  in class, because that branch's only stop was a school scan that fails about
   two days in three;
 * the bar lurched between 78% and 7% every few minutes, because two branches
   measured progress on different scales;
@@ -115,16 +115,16 @@ def journey_stage(
     ``now`` is local. Ordering matters: having arrived somewhere outranks
     being on the way there, and being aboard outranks the bus merely being
     nearby — otherwise an afternoon approach would describe a rider who is
-    already on the bus as though she were still waiting for it.
+    already on the bus as though they were still waiting for it.
     """
     at_stop = distance is not None and distance <= arrival_threshold
 
     # 1. Just scanned off the bus. Holds briefly, then lets the day go quiet.
     #
-    #    WHERE she got off depends on which run it was. A drop-off scan in the
+    #    WHERE they got off depends on which run it was. A drop-off scan in the
     #    morning is the school; in the afternoon it is the home stop. Reading
     #    every drop-off as the school announced "Arrived at school — dropped
-    #    off safely" as she stepped off the bus outside the house.
+    #    off safely" as the rider stepped off the bus outside the house.
     #
     #    That assumption held only because the home leg went unscanned for the
     #    first eight days observed. It is being scanned now, which is better

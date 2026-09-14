@@ -246,7 +246,7 @@ class WheresTheBusJourneySensor(WheresTheBusEntity, SensorEntity):
     One enum plus the numbers that go with it, so a notification automation
     reads an answer instead of working one out. Ten branches used to each
     decide this for themselves, and the gaps between them produced a bar that
-    filled for two hours after she reached school, a bar that lurched between
+    filled for two hours after the rider reached school, a bar that lurched between
     78% and 7%, a title and colour that flickered, and a countdown that ran
     61 hours to the following Monday.
     """
