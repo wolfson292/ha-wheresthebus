@@ -18,7 +18,7 @@ One device per rider on your account, with these entities:
 | `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
 | `sensor.<rider>_last_gps_fix` | When the bus was last heard from (diagnostic). |
 | `sensor.<rider>_journey` | Which stage of the run the rider is in right now. |
-| `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop. |
+| `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop, with an `earliest`/`latest` band. |
 | `sensor.<rider>_school_arrival` | When the morning ride is expected to reach school. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
 | `sensor.<rider>_last_pickup` | Timestamp the rider was last picked up. |
@@ -111,6 +111,23 @@ where the rung ladder only reconsiders at four fixed distances, and the clock
 median does not respond at all. `prediction_basis` reads `progress`, and
 `progress_samples` says how many past journeys were far enough out to speak to
 today's distance.
+
+Because the answer is a set of remainders rather than one number, the estimate
+also reports the range it came from: `earliest`, `latest` and
+`uncertainty_minutes`. That band is not a fixed tolerance bolted onto a guess —
+it is how much past journeys disagree about the part of the route still to run,
+so **it closes towards nothing on its own as the bus nears the stop**.
+
+It describes an **ordinary** journey rather than the worst one on record: the
+same outlier rejection used for the clock median is applied to the remainders
+first. One bus stuck behind a freight train would otherwise widen the band for
+weeks and leave it saying nothing. A genuinely unusual day can and will fall
+outside it, which is the right way round — a range wide enough to always be
+correct is worth nothing. Three
+journeys that differ by twenty minutes about a bus five miles out differ by
+half a minute about one at the end of the road. The same band is reported for
+the other two methods, from the rung's legs or from the spread of past arrival
+times, so the attribute always means the same thing.
 
 One subtlety: a bus weaves while it works a route, so the same distance recurs
 several times in a journey. Only the **last** occurrence counts — the first

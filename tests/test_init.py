@@ -985,3 +985,40 @@ async def test_the_journey_sensor_reports_the_current_stage(
     # in test_journey.py, at every instant of a school day.
     for key in ("progress", "target", "boarded", "journey_id"):
         assert key in journey.attributes
+
+
+async def test_the_prediction_reports_an_earliest_and_a_latest(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """A single time implies a precision the data does not have."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # Two mornings that disagree: five minutes from a mile out, then seven.
+    await _record_morning_arrival(
+        hass, mock_config_entry, mock_api, day=1, crossed=(7, 56), arrived=(8, 1)
+    )
+    await _record_morning_arrival(
+        hass, mock_config_entry, mock_api, day=2, crossed=(7, 54), arrived=(8, 1)
+    )
+
+    with freeze_time_local(2026, 9, 3, 7, 50):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
+    with freeze_time_local(2026, 9, 3, 7, 52):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.earliest is not None
+    assert prediction.latest is not None
+    # The two mornings bracket it, and the estimate sits inside the bracket.
+    assert prediction.earliest <= prediction.arrival <= prediction.latest
+    assert dt_util.as_local(prediction.earliest).strftime("%H:%M") == "07:57"
+    assert dt_util.as_local(prediction.latest).strftime("%H:%M") == "07:59"
+
+    sensor = hass.states.get("sensor.robin_alex_rivera_next_arrival")
+    assert sensor is not None
+    assert sensor.attributes["uncertainty_minutes"] == 2

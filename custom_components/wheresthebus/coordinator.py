@@ -103,6 +103,13 @@ class ArrivalPrediction:
     anchor_samples: int | None = None
     # How many past journeys were far enough out to speak to today's distance.
     progress_samples: int | None = None
+    # The earliest and latest this arrival has been, judged the same way as
+    # the estimate itself. Not a statistical interval — the observed range,
+    # which is the honest thing to show off a handful of journeys. It narrows
+    # on its own as the bus closes in, because what is left to vary is the
+    # part of the journey still to run.
+    earliest: datetime | None = None
+    latest: datetime | None = None
     # Where the run's window was centred — the learned arrival once there is
     # one, otherwise the timetable. Exposed because a window centred on a
     # timetable that is twenty minutes out is the failure it hides behind.
@@ -386,6 +393,13 @@ class ApproachRecorder:
             "recedes": self.recedes,
             "stale": self.stale,
         }
+
+
+def _on_day(day: datetime, clock: time) -> datetime:
+    """Return a wall-clock time placed on the same local day as ``day``."""
+    return dt_util.as_utc(
+        day.replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0)
+    )
 
 
 def _boarding_for(student: Student, run: str, day: date) -> datetime | None:
@@ -684,12 +698,17 @@ def _median(values: list[int]) -> int:
     return values[len(values) // 2]
 
 
-def _reject_outliers(times: list[int]) -> tuple[list[int], int]:
+def _reject_outliers(
+    times: list[int], floor: int = OUTLIER_FLOOR_MINUTES
+) -> tuple[list[int], int]:
     """Drop arrivals far enough from the median to be a bad day, not a pattern.
 
     ``times`` must be sorted. Returns the arrivals to learn from and how many
     were discarded. With too few samples to judge, everything is kept: two
     arrivals cannot tell you which of them is the anomaly.
+
+    ``floor`` is in whatever unit ``times`` is: minutes for clock arrivals,
+    seconds for the remainders a progress estimate works in.
     """
     minimum_to_judge = 3
     if len(times) < minimum_to_judge:
@@ -697,7 +716,7 @@ def _reject_outliers(times: list[int]) -> tuple[list[int], int]:
 
     middle = _median(times)
     deviation = _median(sorted(abs(value - middle) for value in times))
-    threshold = max(OUTLIER_MAD_MULTIPLIER * deviation, OUTLIER_FLOOR_MINUTES)
+    threshold = max(OUTLIER_MAD_MULTIPLIER * deviation, floor)
 
     kept = [value for value in times if abs(value - middle) <= threshold]
     # Never discard everything, however strange the data looks.
@@ -929,6 +948,10 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self._approach: dict[tuple[int, str, date], ApproachRecorder] = {}
         # The standing estimate of when each bus last got a GPS fix.
         self._gps_fix: dict[int, datetime] = {}
+        # Earliest and latest a run has been observed arriving, kept as a
+        # side effect of taking its median so the clock estimate can show the
+        # same band the other two do.
+        self._bounds: dict[tuple[int, str], tuple[time, time]] = {}
 
     async def _async_update_data(self) -> dict[int, dict[str, Any]]:
         """Fetch one position update per rider."""
@@ -1484,7 +1507,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             # that reconsiders on every position report.
             progress = self._progress_arrival(child_id, run, local_now)
             if progress is not None and self._watching(child_id, run, local_now):
-                when, seen = progress
+                when, seen, soonest, latest = progress
                 candidates.append(
                     ArrivalPrediction(
                         run=run,
@@ -1496,6 +1519,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                         outliers=outliers,
                         scheduled=scheduled,
                         progress_samples=seen,
+                        earliest=dt_util.as_utc(soonest),
+                        latest=dt_util.as_utc(latest),
                         centre=learned or scheduled,
                     )
                 )
@@ -1505,7 +1530,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             # matters. Anchor to the crossing and stop guessing.
             anchored = self._anchored_arrival(child_id, run, local_now)
             if anchored is not None:
-                when, rung_distance, rung_samples = anchored
+                when, rung_distance, rung_samples, soonest, latest = anchored
                 candidates.append(
                     ArrivalPrediction(
                         run=run,
@@ -1518,6 +1543,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                         scheduled=scheduled,
                         anchored_at=rung_distance,
                         anchor_samples=rung_samples,
+                        earliest=dt_util.as_utc(soonest),
+                        latest=dt_util.as_utc(latest),
                         centre=learned or scheduled,
                     )
                 )
@@ -1533,10 +1560,13 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     microsecond=0,
                 )
                 if moment > local_now and moment.weekday() in service:
+                    span = self._bounds.get((child_id, run))
                     candidates.append(
                         ArrivalPrediction(
                             run=run,
                             arrival=dt_util.as_utc(moment),
+                            earliest=_on_day(moment, span[0]) if span else None,
+                            latest=_on_day(moment, span[1]) if span else None,
                             source=SOURCE_LEARNED if learned else SOURCE_SCHEDULED,
                             basis=BASIS_HISTORICAL if learned else SOURCE_SCHEDULED,
                             samples=samples,
@@ -1554,7 +1584,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
     def _progress_arrival(
         self, child_id: int, run: str, local_now: datetime
-    ) -> tuple[datetime, int] | None:
+    ) -> tuple[datetime, int, datetime, datetime] | None:
         """Estimate arrival from how far along the route the bus already is.
 
         Every past journey's track says how far out the bus was at each moment
@@ -1585,15 +1615,25 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         if len(remainders) < MIN_PROGRESS_SAMPLES:
             return None
 
-        estimate = local_now + timedelta(seconds=_median(remainders))
+        # The band describes an ordinary journey, not the worst one on record.
+        # One bus stuck behind a freight train would otherwise widen it for
+        # weeks and make it say nothing. A genuinely unusual day can and will
+        # fall outside it — that is the trade, and the right way round.
+        usual, _ = _reject_outliers(remainders, floor=OUTLIER_FLOOR_MINUTES * 60)
+        estimate = local_now + timedelta(seconds=_median(usual))
         # Already overdue against this means it has arrived, or is about to.
         if estimate <= local_now:
             return None
-        return estimate, len(remainders)
+        return (
+            estimate,
+            len(remainders),
+            local_now + timedelta(seconds=usual[0]),
+            local_now + timedelta(seconds=usual[-1]),
+        )
 
     def _anchored_arrival(
         self, child_id: int, run: str, local_now: datetime
-    ) -> tuple[datetime, float, int] | None:
+    ) -> tuple[datetime, float, int, datetime, datetime] | None:
         """Estimate arrival from the live approach, or None if not applicable.
 
         Applies only while this run's bus has crossed a rung today, is still
@@ -1620,12 +1660,19 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return None
 
         crossed = dt_util.as_local(approach.crossings[rung])
+        legs, _ = _reject_outliers(legs, floor=OUTLIER_FLOOR_MINUTES * 60)
         estimate = crossed + timedelta(seconds=_median(legs))
         # A bus already overdue against this estimate has arrived, or is about
         # to; leave it be rather than reporting a time in the past.
         if estimate <= local_now:
             return None
-        return estimate, self._ladder[rung], len(legs)
+        return (
+            estimate,
+            self._ladder[rung],
+            len(legs),
+            crossed + timedelta(seconds=legs[0]),
+            crossed + timedelta(seconds=legs[-1]),
+        )
 
     def _service_days(self, child_id: int) -> frozenset[int]:
         """Return the weekdays this rider's bus is believed to run.
@@ -1667,4 +1714,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         kept, excluded = _reject_outliers(times)
         middle = _median(kept)
         spread = kept[-1] - kept[0]
+        self._bounds[(child_id, run)] = (
+            time(hour=kept[0] // 60, minute=kept[0] % 60),
+            time(hour=kept[-1] // 60, minute=kept[-1] % 60),
+        )
         return time(hour=middle // 60, minute=middle % 60), len(kept), spread, excluded

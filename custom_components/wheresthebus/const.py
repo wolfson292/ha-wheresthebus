@@ -256,6 +256,14 @@ ATTR_WINDOW_CENTRE: Final = "window_centre"
 # How many past journeys were far enough out to say anything about this
 # distance. Two is enough to take a median of; one is an anecdote.
 ATTR_PROGRESS_SAMPLES: Final = "progress_samples"
+# The observed range this arrival has fallen in, judged the same way as the
+# estimate. Not a statistical interval — off a handful of journeys the honest
+# thing to show is the range actually seen. It closes towards nothing as the
+# bus nears the stop, because what is left to vary is the part of the journey
+# still to run.
+ATTR_EARLIEST: Final = "earliest"
+ATTR_LATEST: Final = "latest"
+ATTR_UNCERTAINTY: Final = "uncertainty_minutes"
 MIN_PROGRESS_SAMPLES: Final = 2
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"

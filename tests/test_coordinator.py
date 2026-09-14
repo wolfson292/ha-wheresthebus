@@ -11,6 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.wheresthebus.const import (
     ARRIVAL_HISTORY_LIMIT,
+    OUTLIER_FLOOR_MINUTES,
     SCAN_DROPOFF,
     SCAN_PICKUP,
     TRACK_SAMPLE_LIMIT,
@@ -845,3 +846,65 @@ def test_progress_reads_earlier_when_the_route_runs_ahead() -> None:
     # So a bus at half a mile is told fifteen minutes, not thirty — without
     # anything having to know that a stop was skipped.
     assert remaining_at(typical, 0.5) < remaining_at(typical, 2.0)
+
+
+def test_the_estimate_band_narrows_as_the_bus_closes_in() -> None:
+    """The whole point of showing a range: it has to mean something.
+
+    Far out, three journeys disagree by a quarter of an hour about how long is
+    left. At the end of the road they agree to within a minute. The band is
+    not a fixed tolerance around a guess — it is the disagreement between past
+    journeys about the part of the route still to run, so it closes towards
+    nothing on its own as that part shrinks.
+    """
+    journeys = [
+        [(2700, 5.0), (1500, 2.0), (600, 1.0), (60, 0.4), (0, 0.1)],
+        [(3300, 5.0), (2100, 2.0), (780, 1.0), (75, 0.4), (0, 0.1)],
+        [(3900, 5.0), (1800, 2.0), (660, 1.0), (90, 0.4), (0, 0.1)],
+    ]
+
+    def band(distance: float) -> int:
+        left = sorted(remaining_at(t, distance) for t in journeys)
+        return left[-1] - left[0]
+
+    five_miles = band(5.0)
+    two_miles = band(2.0)
+    one_mile = band(1.0)
+    nearly_there = band(0.4)
+
+    assert five_miles == 20 * 60  # twenty minutes apart
+    assert two_miles == 10 * 60
+    assert one_mile == 3 * 60
+    assert nearly_there == 30  # half a minute
+
+    # Monotonically tighter the whole way in — that is the property worth
+    # pinning, not any particular number above.
+    assert five_miles > two_miles > one_mile > nearly_there
+
+
+def test_the_band_describes_an_ordinary_journey_not_the_worst_one() -> None:
+    """A range wide enough to always be right is worth nothing.
+
+    One bus stuck behind a freight train would drag the worst case out for
+    weeks. The band is the range of ORDINARY journeys, so an exceptional day
+    can and does fall outside it — which is the right way round.
+    """
+    # Four tidy journeys and one that took an extra half hour.
+    remainders = sorted([600, 640, 660, 700, 2400])
+
+    usual, dropped = _reject_outliers(remainders, floor=OUTLIER_FLOOR_MINUTES * 60)
+
+    assert dropped == 1
+    assert usual == [600, 640, 660, 700]
+    # Under two minutes wide, rather than the thirty the bad day would give.
+    assert usual[-1] - usual[0] == 100
+    # And the bad day is genuinely outside the band, not clamped onto its edge.
+    assert usual[-1] < 2400
+
+
+def test_too_few_journeys_to_judge_keeps_them_all() -> None:
+    """Two journeys cannot tell you which of them is the anomaly."""
+    assert _reject_outliers([600, 2400], floor=OUTLIER_FLOOR_MINUTES * 60) == (
+        [600, 2400],
+        0,
+    )

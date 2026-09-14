@@ -24,7 +24,9 @@ from .const import (
     ATTR_ANCHOR_DISTANCE,
     ATTR_ANCHOR_SAMPLES,
     ATTR_BUS_NUMBER,
+    ATTR_EARLIEST,
     ATTR_JOURNEY_ID,
+    ATTR_LATEST,
     ATTR_OUTLIERS_EXCLUDED,
     ATTR_PREDICTION_BASIS,
     ATTR_PREDICTION_SOURCE,
@@ -44,6 +46,7 @@ from .const import (
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
     ATTR_SUBSTITUTE_BUS,
+    ATTR_UNCERTAINTY,
     ATTR_WINDOW_CENTRE,
     BUS_STATUS_OPTIONS,
     JOURNEY_STAGES,
@@ -158,6 +161,11 @@ STUDENT_SENSORS: tuple[WheresTheBusStudentSensorDescription, ...] = (
         value_fn=lambda student: _blank_to_none(student.bus_number),
     ),
 )
+
+
+def _stamp(moment: datetime | None) -> str | None:
+    """Return a local ISO timestamp, or None."""
+    return dt_util.as_local(moment).isoformat() if moment else None
 
 
 def _scan_time(scan: ScanEvent | None) -> datetime | None:
@@ -367,6 +375,13 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             ATTR_ANCHOR_DISTANCE: prediction.anchored_at,
             ATTR_ANCHOR_SAMPLES: prediction.anchor_samples,
             ATTR_PROGRESS_SAMPLES: prediction.progress_samples,
+            ATTR_EARLIEST: _stamp(prediction.earliest),
+            ATTR_LATEST: _stamp(prediction.latest),
+            ATTR_UNCERTAINTY: (
+                round((prediction.latest - prediction.earliest).total_seconds() / 60)
+                if prediction.earliest and prediction.latest
+                else None
+            ),
             ATTR_WINDOW_CENTRE: (
                 prediction.centre.strftime("%H:%M") if prediction.centre else None
             ),
