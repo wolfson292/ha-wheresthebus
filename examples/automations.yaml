@@ -241,465 +241,128 @@
 # ---------------------------------------------------------------------------
 # 5. Live Activity — one activity across the whole journey
 # ---------------------------------------------------------------------------
-# A single automation drives one Live Activity from the approach, through the
-# ride, to arrival. Earlier versions of this file split it into start/update/
-# end automations; they fought over the same tag and could not express the
-# ride, where the bar has to fill against elapsed time rather than distance.
+# This reads sensor.RIDER_journey. It does not work the journey out again.
 #
-# The stage goes in the title, the detail in the message, and a progress bar
-# runs throughout — by distance on the approach, by elapsed time once pm_ride.
+# It used to be ten branches, each deciding for itself whether a journey was
+# under way and how far through it was, from whatever signals were nearest to
+# hand. Four faults came out of the gaps between them:
 #
-# Three things worth understanding before editing it:
+#   * the morning bar filled for two hours after she reached school, because
+#     that branch's only stop was a scan the school skips two days in three;
+#   * the bar lurched between 78% and 7%, because two branches measured
+#     progress on different scales;
+#   * the title and colour flickered, because they were chosen in two places
+#     that disagreed;
+#   * the countdown ran 61 hours to the following Monday, because one branch
+#     never checked its target was still today.
 #
-#   * The approach is split into a morning and an afternoon branch, each
-#     requiring next_arrival's `run` attribute to match the time of day.
-#     next_arrival tracks the next arrival at the HOME stop, so the moment the
-#     morning pickup passes it rolls to the afternoon run — without the guard
-#     the activity announced "on the way home" while the bus was still driving
-#     to school.
+# None was a hard problem. Each was a gap in one branch that the other nine
+# could not see, in a place with no way to test it. The integration already
+# held the scans, the live distance, the learned windows and both predictions,
+# so it answers the question once and this presents the answer.
 #
-#   * Rides tick every five minutes, not on every poll. iOS throttles and
-#     eventually drops Live Activities updated too often, and a bar that
-#     advanced smoothly would end up not advancing at all.
+# What is left below is presentation: stage to wording, stage to colour, and
+# one push. No dates, no windows, no run attributes, no elapsed-time
+# arithmetic — the four things that went wrong.
 #
-#   * The morning ride stops ten minutes past the predicted school arrival as
-#     well as on the drop-off scan. Relying on the scan alone left it pushing
-#     an update every five minutes for two hours after the child was already
-#     in class, on every day the school did not scan.
-#
-# The phone must complete a token handshake first. If nothing appears, open the
-# companion app and sync Live Activities in its settings. An app update
-# invalidates that token while ordinary notifications keep working, so if the
-# banners arrive and the Live Activity does not, re-sync before debugging here.
+# Needs the integration's journey sensor (2.1.0+) and, for iOS, Home Assistant
+# 2026.7+ with iOS 17.2 or later.
 - id: wtb_bus_live
   alias: School bus — Live Activity
   mode: queued
   max: 10
-  # Five stored traces is the default, and a five-minute heartbeat evicts every
-  # interesting run within 25 minutes.
   trace:
     stored_traces: 30
   variables:
-    s: sensor.RIDER_next_arrival
-    sa: sensor.RIDER_school_arrival
-    p: sensor.RIDER_last_pickup
-    d: sensor.RIDER_last_drop_off
-    dist: sensor.RIDER_distance_to_stop
-    # "Is a journey actually happening right now" — derived ONCE here and read
-    # by every branch that needs it, rather than each re-deriving it from
-    # whatever signals were to hand. That duplication is what let three
-    # separate bugs through: a bar filling all morning when the school did not
-    # scan, a bar that lurched 78% -> 7% when two branches disagreed, and an
-    # activity counting down 61 HOURS because the target had rolled to Monday
-    # while the branch still thought the ride was in progress.
-    #
-    # The clause every one of them was missing: the arrival being counted down
-    # to has to be TODAY. That is what distinguishes a journey under way from
-    # one that has finished and left the sensor pointing at the next run.
-    am_ride: "{% set praw = states(p) %}{% set saraw = states(sa) %}{% set draw = states(d) %}{{ praw not in ['unknown','unavailable'] and saraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour < 12 and (saraw | as_datetime | as_local).date() == now().date() and as_timestamp(now()) < (saraw | as_timestamp) + 600 and (draw in ['unknown','unavailable'] or (draw | as_timestamp) < (praw | as_timestamp)) }}"
-    pm_ride: "{% set praw = states(p) %}{% set sraw = states(s) %}{{ praw not in ['unknown','unavailable'] and sraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour >= 12 and (sraw | as_datetime | as_local).date() == now().date() }}"
-    # A tag per journey, not one fixed string for all time.
-    #
-    # iOS caps how often a NEW Live Activity may be launched by push. Go over
-    # it and starts fail SILENTLY — the automation succeeds, Home Assistant
-    # logs nothing, the phone shows nothing. And because a failed start means
-    # the next push is also a start, a run of failures never recovers on its
-    # own. A runaway that pushed every five minutes for hours after a journey
-    # had ended drained the budget here and kept it drained for two weeks.
-    #
-    # The am/pm half comes from the clock, NOT from next_arrival's run
-    # attribute: that flips to pm the instant the morning pickup passes, which
-    # would change the tag mid-journey and start a second activity rather than
-    # updating the first.
-    tag: "wtb-{{ now().strftime('%Y%m%d') }}-{{ 'am' if now().hour < 12 else 'pm' }}"
+    j: sensor.RIDER_journey
+    stage: "{{ states(j) }}"
+    # The tag IS the journey id, so a push can never update yesterday's
+    # activity, and one that fails to start leaves nothing wedged behind.
+    jid: "{{ state_attr(j, 'journey_id') }}"
+    progress: "{{ state_attr(j, 'progress') }}"
+    target: "{{ state_attr(j, 'target') }}"
+    dist: "{{ states('sensor.RIDER_distance_to_stop') }}"
+    mins: "{{ ((target | as_timestamp - as_timestamp(now())) / 60) | round | int if target else 0 }}"
+    due: "{{ (target | as_datetime | as_local).strftime('%-I:%M %p') if target else '' }}"
+    title: >-
+      {{ {'to_stop': 'Bus on the way to the stop', 'at_stop': 'At the stop now',
+      'to_school': 'On board — riding to school', 'at_school': 'Arrived at school',
+      'from_school': 'On board — riding home', 'to_home': 'Bus on the way home',
+      'home': 'Home'}.get(stage, '') }}
+    detail: "{% if stage in ['to_stop', 'to_home'] %}{{ dist }} miles away · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }} · due {{ due }}{% elif stage == 'to_school' %}{{ 'Arriving at school any moment' if mins <= 0 else mins ~ ' min to school' }}{% elif stage == 'from_school' %}{{ dist }} miles from home · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }}{% elif stage == 'at_stop' %}The bus has arrived — time to board{% elif stage == 'at_school' %}Dropped off safely{% elif stage == 'home' %}The bus is at the stop now{% endif %}"
+    colour: >-
+      {{ {'to_stop': '#FFC72C', 'to_home': '#FFC72C', 'at_stop': '#4CAF50',
+      'to_school': '#4CAF50', 'from_school': '#4CAF50', 'at_school': '#2196F3',
+      'home': '#2196F3'}.get(stage, '#4CAF50') }}
+    glyph: >-
+      {{ {'to_stop': 'mdi:bus-school', 'to_home': 'mdi:bus-school',
+      'at_stop': 'mdi:bus-stop', 'to_school': 'mdi:bus-school',
+      'from_school': 'mdi:bus-school', 'at_school': 'mdi:school',
+      'home': 'mdi:home'}.get(stage, 'mdi:bus-school') }}
   triggers:
-    - trigger: time
-      at:
-        entity_id: sensor.RIDER_next_arrival
-        offset: "-00:15:00"
-      id: approach
-    # A rung apiece, so the activity refreshes as the bus closes rather than
-    # only on the timed trigger — which on one morning lost by ten seconds to
-    # a GPS gap and opened nothing at all.
-    - trigger: numeric_state
-      entity_id: sensor.RIDER_distance_to_stop
-      below: 3
-      id: approach
-    - trigger: numeric_state
-      entity_id: sensor.RIDER_distance_to_stop
-      below: 2
-      id: approach
-    - trigger: numeric_state
-      entity_id: sensor.RIDER_distance_to_stop
-      below: 1
-      id: approach
-    - trigger: numeric_state
-      entity_id: sensor.RIDER_distance_to_stop
-      below: 0.5
-      id: approach
     - trigger: state
-      entity_id: sensor.RIDER_last_pickup
-      id: boarded
-    - trigger: state
-      entity_id: sensor.RIDER_last_drop_off
-      id: at_school
-    - trigger: numeric_state
-      entity_id: sensor.RIDER_distance_to_stop
-      below: 0.3
-      id: at_stop
+      entity_id: sensor.RIDER_journey
+      id: stage
+    # Refreshes the bar and the countdown mid-stage. Five minutes, not every
+    # poll: iOS throttles frequent updates, and more importantly it caps how
+    # often a NEW activity may be started by push. Exceed that and starts fail
+    # SILENTLY — and because a failed start means the next push is also a
+    # start, it never recovers on its own.
     - trigger: time_pattern
       minutes: /5
-      id: ride_tick
-    - trigger: time
-      at: "09:45:00"
-      id: cleanup
-    - trigger: time
-      at: "18:50:00"
-      id: cleanup
+      id: tick
   conditions:
     - condition: time
       weekday: [mon, tue, wed, thu, fri]
   actions:
     - choose:
-        - alias: Boarded at the stop — riding to school
+        - alias: The journey ended — clear the activity it was driving
           conditions:
             - condition: trigger
-              id: boarded
-            - condition: time
-              after: "06:00:00"
-              before: "12:00:00"
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_last_pickup
-                  state: [unknown, unavailable]
+              id: stage
+            - condition: state
+              entity_id: sensor.RIDER_journey
+              state: idle
+            # The id of the journey that just finished travels on the old
+            # state, so no fixed-time backstop or date arithmetic is needed.
+            - condition: template
+              value_template: "{{ trigger.from_state is not none and trigger.from_state.attributes.get('journey_id') }}"
           sequence:
             - action: NOTIFY_TARGET
               data:
-                title: On board — riding to school
-                message: "Picked up at {{ (states(p) | as_datetime | as_local).strftime('%-I:%M %p') }}{% if states(sa) not in ['unknown','unavailable'] %} · school around {{ (states(sa) | as_datetime | as_local).strftime('%-I:%M %p') }}{% endif %}"
+                message: clear_notification
                 data:
-                  tag: "{{ tag }}"
+                  tag: "{{ trigger.from_state.attributes.journey_id }}"
+
+        - alias: A journey is under way — show where it has got to
+          conditions:
+            - condition: not
+              conditions:
+                - condition: state
+                  entity_id: sensor.RIDER_journey
+                  state: [idle, unknown, unavailable]
+          sequence:
+            - action: NOTIFY_TARGET
+              data:
+                title: "{{ title }}"
+                message: "{{ detail }}"
+                data:
+                  tag: "{{ jid }}"
                   live_update: true
-                  chronometer: true
-                  when: "{{ (states(sa) if states(sa) not in ['unknown','unavailable'] else states(p)) | as_timestamp | int }}"
-                  progress: 0
+                  # A chronometer left running past its target counts UPWARD,
+                  # turning a late bus into a growing "1:40:51".
+                  chronometer: "{{ target is not none and mins > 0 }}"
+                  when: "{{ (target | as_timestamp | int) if target else (as_timestamp(now()) | int) }}"
+                  progress: "{{ progress if progress is not none else 0 }}"
                   progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "#4CAF50"
-                  color: "#4CAF50"
+                  notification_icon: "{{ glyph }}"
+                  notification_icon_color: "{{ colour }}"
+                  color: "{{ colour }}"
                   # url travels per update, so it repeats on every push.
                   url: /school-bus/overview
                   clickAction: /school-bus/overview
-
-        - alias: Riding to school — fill the bar
-          conditions:
-            - condition: trigger
-              id: ride_tick
-            - condition: time
-              after: "06:00:00"
-              before: "12:00:00"
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_last_pickup
-                  state: [unknown, unavailable]
-                - condition: state
-                  entity_id: sensor.RIDER_school_arrival
-                  state: [unknown, unavailable]
-            - condition: template
-              value_template: "{{ am_ride }}"
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: On board — riding to school
-                message: "{% set left = ((states(sa) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ 'Arriving at school any moment' if left <= 0 else left ~ ' min to school' }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  # A chronometer left running past its target counts UPWARD,
-                  # turning a late bus into a growing "1:40:51" that reads as
-                  # something having gone wrong.
-                  chronometer: "{{ (states(sa) | as_timestamp) > as_timestamp(now()) }}"
-                  when: "{{ states(sa) | as_timestamp | int }}"
-                  progress: "{% set b = states(p) | as_timestamp %}{% set a = states(sa) | as_timestamp %}{{ [[(((as_timestamp(now()) - b) / [a - b, 60] | max) * 100) | round | int, 0] | max, 100] | min }}"
-                  progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "#4CAF50"
-                  color: "#4CAF50"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-
-        - alias: Boarded at school — riding home
-          conditions:
-            - condition: trigger
-              id: boarded
-            - condition: time
-              after: "12:00:00"
-              before: "23:00:00"
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_last_pickup
-                  state: [unknown, unavailable]
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: On board — riding home
-                message: "Left school at {{ (states(p) | as_datetime | as_local).strftime('%-I:%M %p') }} · home around {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: true
-                  when: "{{ states(s) | as_timestamp | int }}"
-                  progress: 0
-                  progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "#4CAF50"
-                  color: "#4CAF50"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
                   push:
                     interruption-level: time-sensitive
-
-        - alias: Riding home — fill the bar
-          conditions:
-            - condition: trigger
-              id: ride_tick
-            - condition: time
-              after: "12:00:00"
-              before: "18:40:00"
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_last_pickup
-                  state: [unknown, unavailable]
-            - condition: numeric_state
-              entity_id: sensor.RIDER_distance_to_stop
-              above: 0.3
-            - condition: template
-              value_template: "{{ pm_ride }}"
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: On board — riding home
-                message: "{% set left = ((states(s) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ states(dist) }} miles from home · {{ 'arriving any moment' if left <= 0 else left ~ ' min' }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: "{{ (states(s) | as_timestamp) > as_timestamp(now()) }}"
-                  when: "{{ states(s) | as_timestamp | int }}"
-                  progress: "{% set b = states(p) | as_timestamp %}{% set a = states(s) | as_timestamp %}{{ [[(((as_timestamp(now()) - b) / [a - b, 60] | max) * 100) | round | int, 0] | max, 100] | min }}"
-                  progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "#4CAF50"
-                  color: "#4CAF50"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-
-        - alias: Arrived at school — morning journey done
-          conditions:
-            - condition: trigger
-              id: at_school
-            - condition: time
-              after: "06:00:00"
-              before: "12:00:00"
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_last_drop_off
-                  state: [unknown, unavailable]
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: Arrived at school
-                message: "Dropped off at {{ (states(d) | as_datetime | as_local).strftime('%-I:%M %p') }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: false
-                  progress: 100
-                  progress_max: 100
-                  notification_icon: mdi:school
-                  notification_icon_color: "#2196F3"
-                  color: "#2196F3"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-            - delay: "00:03:00"
-            - action: NOTIFY_TARGET
-              data:
-                message: clear_notification
-                data:
-                  tag: "{{ tag }}"
-
-        - alias: Home — afternoon journey done
-          conditions:
-            - condition: trigger
-              id: at_stop
-            - condition: time
-              after: "17:10:00"
-              before: "18:40:00"
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: Home
-                message: The bus is at the stop now
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: false
-                  progress: 100
-                  progress_max: 100
-                  notification_icon: mdi:home
-                  notification_icon_color: "#2196F3"
-                  color: "#2196F3"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-            - delay: "00:03:00"
-            - action: NOTIFY_TARGET
-              data:
-                message: clear_notification
-                data:
-                  tag: "{{ tag }}"
-
-        - alias: At the stop — board now
-          conditions:
-            - condition: trigger
-              id: at_stop
-            - condition: time
-              after: "07:20:00"
-              before: "08:40:00"
-            - condition: state
-              entity_id: sensor.RIDER_next_arrival
-              attribute: run
-              state: am
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: At the stop now
-                message: The bus has arrived — time to board
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: false
-                  progress: 100
-                  progress_max: 100
-                  notification_icon: mdi:bus-stop
-                  notification_icon_color: "#4CAF50"
-                  color: "#4CAF50"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-
-        - alias: Approaching the stop in the morning
-          conditions:
-            - condition: trigger
-              id: approach
-            - condition: time
-              after: "07:20:00"
-              before: "08:40:00"
-            - condition: state
-              entity_id: sensor.RIDER_next_arrival
-              attribute: run
-              state: am
-            - condition: state
-              entity_id: sensor.RIDER_next_arrival
-              attribute: prediction_source
-              state: learned
-            # A duration, not an instantaneous check. bus_status reports GPS
-            # freshness, not whether a bus is running: it flaps between current
-            # and stale every minute or two and drops to inactive during any
-            # GPS gap. On one morning it went inactive at 07:31 and back to
-            # current at 07:46:10, blocking an alert due at 07:46:00 by ten
-            # seconds. Only a sustained outage should count as no service.
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_bus_status
-                  state: inactive
-                  for: "00:30:00"
-                - condition: state
-                  entity_id: sensor.RIDER_bus_status
-                  state: unavailable
-                  for: "00:30:00"
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                title: Bus on the way to the stop
-                message: "{{ states(dist) }} miles away · due {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: true
-                  when: "{{ states(s) | as_timestamp | int }}"
-                  progress: "{{ (((3.0 - [states(dist) | float(3.0), 3.0] | min) / 3.0) * 100) | round | int }}"
-                  progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "#FFC72C"
-                  color: "#FFC72C"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-                  push:
-                    interruption-level: time-sensitive
-
-        - alias: Approaching home in the afternoon
-          conditions:
-            - condition: trigger
-              id: approach
-            - condition: time
-              after: "17:10:00"
-              before: "18:40:00"
-            - condition: state
-              entity_id: sensor.RIDER_next_arrival
-              attribute: run
-              state: pm
-            - condition: state
-              entity_id: sensor.RIDER_next_arrival
-              attribute: prediction_source
-              state: learned
-            - condition: not
-              conditions:
-                - condition: state
-                  entity_id: sensor.RIDER_bus_status
-                  state: inactive
-                  for: "00:30:00"
-                - condition: state
-                  entity_id: sensor.RIDER_bus_status
-                  state: unavailable
-                  for: "00:30:00"
-          sequence:
-            # This branch fires DURING the ride home, so it has to agree with
-            # the ride branch above or the activity contradicts itself: the
-            # bar lurched from 78% to 7% and the colour flipped green/yellow
-            # every few minutes when the two used different scales.
-            - action: NOTIFY_TARGET
-              data:
-                title: "{{ 'On board — riding home' if pm_ride else 'Bus on the way home' }}"
-                message: "{{ states(dist) }} miles away · {% set left = ((states(s) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ 'arriving any moment' if left <= 0 else left ~ ' min' }} · due {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
-                data:
-                  tag: "{{ tag }}"
-                  live_update: true
-                  chronometer: true
-                  when: "{{ states(s) | as_timestamp | int }}"
-                  progress: "{% if pm_ride %}{% set a = states(s) | as_timestamp %}{% set b = states(p) | as_timestamp %}{{ [[(((as_timestamp(now()) - b) / [a - b, 60] | max) * 100) | round | int, 0] | max, 100] | min }}{% else %}{{ (((3.0 - [states(dist) | float(3.0), 3.0] | min) / 3.0) * 100) | round | int }}{% endif %}"
-                  progress_max: 100
-                  notification_icon: mdi:bus-school
-                  notification_icon_color: "{{ '#4CAF50' if pm_ride else '#FFC72C' }}"
-                  color: "{{ '#4CAF50' if pm_ride else '#FFC72C' }}"
-                  url: /school-bus/overview
-                  clickAction: /school-bus/overview
-                  push:
-                    interruption-level: time-sensitive
-
-        - alias: Backstop — never leave one running
-          conditions:
-            - condition: trigger
-              id: cleanup
-          sequence:
-            - action: NOTIFY_TARGET
-              data:
-                message: clear_notification
-                data:
-                  tag: "{{ tag }}"
 
 # ---------------------------------------------------------------------------
 # 6. Live Activities break silently after a companion app update

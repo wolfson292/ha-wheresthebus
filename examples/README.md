@@ -7,7 +7,7 @@ placeholders — they are meant to be copied and edited, not installed as-is.
 | File | What it is |
 | --- | --- |
 | [`dashboard.yaml`](dashboard.yaml) | Four-view dashboard: Overview, Map, History, and a Predictions page |
-| [`automations.yaml`](automations.yaml) | Four banner alerts, one journey-spanning iOS Live Activity, and an app-update reminder |
+| [`automations.yaml`](automations.yaml) | Four banner alerts, one journey-spanning iOS Live Activity driven by `sensor.RIDER_journey`, and an app-update reminder |
 
 ## What to replace
 
@@ -57,6 +57,22 @@ trustworthy. They never both fire for the same run.
 
 "Arriving now" is position-based and always active — it cannot be wrong about
 where the bus is, even when the prediction is.
+
+### The Live Activity reads one sensor
+
+It does not work out what stage the journey is in — `sensor.RIDER_journey`
+does that, inside the integration, where it can be tested. The automation maps
+the stage to wording and colour and sends one push.
+
+That division matters. The Live Activity here was previously ten branches,
+each deciding independently whether a journey was under way and how far
+through it was, and four separate faults came out of the gaps between them: a
+bar that filled for two hours after she reached school, a bar lurching between
+78% and 7%, a title and colour that flickered, and a countdown that ran 61
+hours to the following Monday. None was hard. Each was a gap in one branch
+that the other nine could not see, somewhere no test could reach.
+
+Needs integration **2.1.0+** for the journey sensor.
 
 ### If the Live Activity never appears
 
