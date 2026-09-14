@@ -51,6 +51,36 @@ than 90 seconds to replace it — enough to absorb the rounding, small enough to
 move the moment a real fix lands. A bus that has gone inactive reports no fix
 at all rather than an increasingly stale one.
 
+### Replaying real journeys before shipping
+
+The estimate is a pure function of recorded positions, and the recorder keeps
+those. So *"what would this have told you, minute by minute, and how wrong
+would it have been"* is answerable at a desk, against real runs, before a
+release rather than after one.
+
+`scripts/capture_journey.py` turns a recorder dump into a replayable journey,
+and `tests/test_backtest.py` replays them and scores the error at every sample.
+
+**Recorded journeys stay local.** `tests/journeys/` is gitignored and must
+remain so. The capture script moves the coordinates to a fictional origin,
+which hides the latitude and longitude — but it deliberately preserves every
+distance and bearing between points, because that geometry is the thing being
+tested. A few miles of turns is a fingerprint: matched against the road network
+it goes straight back on the map, and it is a child's route to and from school.
+Without any journeys present the backtests skip, which is the honest outcome —
+claiming to have validated against real runs when there were none would be
+worse than saying so.
+
+This exists because it was missing. Two faults it would have caught in seconds:
+an estimate that slid forward with the clock whenever the bus stopped closing,
+flat-lining at "about twenty minutes away" for a quarter of an hour; and a
+reading checked against a single agreeable instant, called validated, and wrong
+within the hour. Both were found instead by somebody standing at a bus stop.
+
+**Any change to how the arrival is estimated should be scored against these
+journeys first.** A change that cannot be shown to help on runs already
+recorded is a guess.
+
 ### The journey stage
 
 `journey` answers one question — *what is happening right now* — as an enum

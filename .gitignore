@@ -7,3 +7,11 @@ venv/
 .coverage
 htmlcov/
 .DS_Store
+
+# Recorded journeys. NEVER commit these.
+#
+# Moving the coordinates does not anonymise a route: the shape of a few miles
+# of turns can be matched against the road network and put straight back on
+# the map. These are a child's daily route to and from school.
+tests/journeys/
+*.journey.json
