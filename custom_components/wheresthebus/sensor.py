@@ -30,9 +30,9 @@ from .const import (
     ATTR_OUTLIERS_EXCLUDED,
     ATTR_PREDICTION_BASIS,
     ATTR_PREDICTION_SOURCE,
-    ATTR_PROGRESS_SAMPLES,
     ATTR_RAW_STATUS,
     ATTR_RIDE_MINUTES,
+    ATTR_ROUTE_SAMPLES,
     ATTR_RUN,
     ATTR_SAMPLES,
     ATTR_SCAN_LOCATION,
@@ -374,7 +374,7 @@ class WheresTheBusNextArrivalSensor(WheresTheBusEntity, SensorEntity):
             # measured" from "this is roughly when it usually turns up".
             ATTR_ANCHOR_DISTANCE: prediction.anchored_at,
             ATTR_ANCHOR_SAMPLES: prediction.anchor_samples,
-            ATTR_PROGRESS_SAMPLES: prediction.progress_samples,
+            ATTR_ROUTE_SAMPLES: prediction.route_samples,
             ATTR_EARLIEST: _stamp(prediction.earliest),
             ATTR_LATEST: _stamp(prediction.latest),
             ATTR_UNCERTAINTY: (

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from math import degrees
 
 import pytest
 from homeassistant.core import State
@@ -11,6 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.wheresthebus.const import (
     ARRIVAL_HISTORY_LIMIT,
+    COORD_PRECISION,
     OUTLIER_FLOOR_MINUTES,
     SCAN_DROPOFF,
     SCAN_PICKUP,
@@ -37,7 +39,6 @@ from custom_components.wheresthebus.coordinator import (
     parse_stop_time,
     predict_school_arrival,
     reconstruct_arrivals,
-    remaining_at,
     run_window,
 )
 
@@ -360,9 +361,43 @@ def test_reject_outliers_never_discards_everything() -> None:
 LADDER = (3.0, 2.0, 1.0, 0.5)
 
 
+# The stop these fixtures are built around, and the earth radius the haversine
+# uses, so a wanted distance can be turned into a position exactly.
+_STOP = (40.7155, -74.0020)
+_EARTH_RADIUS_MILES = 3958.7613
+
+
 def _reading(when: datetime, value: str) -> State:
-    """Build a recorded distance reading."""
-    return State("sensor.x_distance_to_stop", value, last_updated=when)
+    """Build a recorded bus position the given distance from the stop.
+
+    The replay reads positions now rather than distances, because a route
+    match needs to know where the bus was. Tests still speak in distances, so
+    this places the bus due north of the stop at exactly that range — due
+    north because a haversine along a meridian is simply the radius times the
+    angle, which makes the round trip exact rather than approximate.
+    """
+    try:
+        miles = float(value)
+    except ValueError:
+        # "unknown" / "unavailable": a gap in the record, with no position.
+        return State("device_tracker.x_bus", value, last_updated=when)
+
+    return State(
+        "device_tracker.x_bus",
+        "not_home",
+        {
+            # A hair inside the asked-for range. The round trip through
+            # degrees and back can land a few femtometres the wrong side of a
+            # rung, and a test that says "3.0" means "at the three mile rung",
+            # not "fractionally outside it". The real feed is rounded to a
+            # tenth of a mile, so the question never arises in production.
+            "latitude": _STOP[0] + degrees(miles * (1 - 1e-12) / _EARTH_RADIUS_MILES),
+            "longitude": _STOP[1],
+            "stop_latitude": _STOP[0],
+            "stop_longitude": _STOP[1],
+        },
+        last_updated=when,
+    )
 
 
 def _local(hour: int, minute: int, second: int = 0, day: int = 3) -> datetime:
@@ -745,7 +780,15 @@ def test_the_approach_track_is_kept_oldest_first_relative_to_arrival() -> None:
 
     arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
 
-    assert arrivals[0].track == [(407, 2.5), (120, 0.9), (0, 0.0)]
+    # (seconds before arrival, latitude, longitude), oldest first. These
+    # fixtures place the bus due north of the stop, so only the latitude moves.
+    track = arrivals[0].track
+    assert [age for age, _, _ in track] == [407, 120, 0]
+    assert [lon for _, _, lon in track] == [round(_STOP[1], COORD_PRECISION)] * 3
+    # Closing on the stop: each latitude nearer than the last.
+    assert [lat for _, lat, _ in track] == sorted(
+        (lat for _, lat, _ in track), reverse=True
+    )
 
 
 def test_the_track_keeps_the_samples_nearest_the_arrival() -> None:
@@ -758,8 +801,8 @@ def test_the_track_keeps_the_samples_nearest_the_arrival() -> None:
     # centre, and dense enough that the cap has to bite.
     start = _local(7, 15, day=3)
     states = [
-        _reading(start + timedelta(seconds=15 * step), "1.0")
-        for step in range(TRACK_SAMPLE_LIMIT * 2)
+        _reading(start + timedelta(seconds=10 * step), "1.0")
+        for step in range(TRACK_SAMPLE_LIMIT + 100)
     ]
     states.append(_reading(_local(7, 56, 47), "0.0"))
 
@@ -767,7 +810,7 @@ def test_the_track_keeps_the_samples_nearest_the_arrival() -> None:
 
     track = arrivals[0].track
     assert len(track) == TRACK_SAMPLE_LIMIT
-    assert track[-1] == (0, 0.0)
+    assert track[-1][0] == 0  # the arrival itself, at the stop
     # Oldest first, and every retained sample is nearer the arrival than the
     # ones the cap dropped.
     assert [point[0] for point in track] == sorted(
@@ -811,75 +854,6 @@ def test_a_bus_parked_inside_a_rung_is_not_treated_as_crossing_it() -> None:
     # that found it inside. Coarse sampling, honestly recorded.
     assert legs[2] == 0
     assert legs[3] == 0
-
-
-def test_remaining_at_answers_from_the_last_time_the_bus_was_that_far_out() -> None:
-    """A bus weaves while it works a route, so one radius recurs several times.
-
-    Only the last occurrence is the final approach. Taking the first would
-    measure from a pass through the same radius twenty minutes earlier.
-    """
-    # (seconds before arrival, distance), oldest first.
-    track = [(3600, 6.0), (2400, 2.0), (1800, 4.0), (600, 2.0), (120, 0.8), (0, 0.1)]
-
-    # 2.0 miles occurs at 2400s and again at 600s; the later one is the answer.
-    assert remaining_at(track, 2.0) == 600
-    assert remaining_at(track, 0.8) == 120
-    # Never as far out as 9 miles, so this journey says nothing about it.
-    assert remaining_at(track, 9.0) is None
-
-
-def test_progress_reads_earlier_when_the_route_runs_ahead() -> None:
-    """The point of the whole exercise.
-
-    A stop skipped because nobody was aboard puts the bus further along than
-    usual for the time of day. Position says so immediately; the clock median
-    never does, and the rung ladder only reconsiders at four fixed distances.
-    """
-    typical = [(3000, 5.0), (1800, 3.0), (900, 1.5), (0, 0.1)]
-
-    # Two miles out. Historically that was a quarter of an hour from home.
-    assert remaining_at(typical, 2.0) == 1800
-    # Having got to half a mile, the same journey had a quarter of that left.
-    assert remaining_at(typical, 0.5) == 900
-
-    # So a bus at half a mile is told fifteen minutes, not thirty — without
-    # anything having to know that a stop was skipped.
-    assert remaining_at(typical, 0.5) < remaining_at(typical, 2.0)
-
-
-def test_the_estimate_band_narrows_as_the_bus_closes_in() -> None:
-    """The whole point of showing a range: it has to mean something.
-
-    Far out, three journeys disagree by a quarter of an hour about how long is
-    left. At the end of the road they agree to within a minute. The band is
-    not a fixed tolerance around a guess — it is the disagreement between past
-    journeys about the part of the route still to run, so it closes towards
-    nothing on its own as that part shrinks.
-    """
-    journeys = [
-        [(2700, 5.0), (1500, 2.0), (600, 1.0), (60, 0.4), (0, 0.1)],
-        [(3300, 5.0), (2100, 2.0), (780, 1.0), (75, 0.4), (0, 0.1)],
-        [(3900, 5.0), (1800, 2.0), (660, 1.0), (90, 0.4), (0, 0.1)],
-    ]
-
-    def band(distance: float) -> int:
-        left = sorted(remaining_at(t, distance) for t in journeys)
-        return left[-1] - left[0]
-
-    five_miles = band(5.0)
-    two_miles = band(2.0)
-    one_mile = band(1.0)
-    nearly_there = band(0.4)
-
-    assert five_miles == 20 * 60  # twenty minutes apart
-    assert two_miles == 10 * 60
-    assert one_mile == 3 * 60
-    assert nearly_there == 30  # half a minute
-
-    # Monotonically tighter the whole way in — that is the property worth
-    # pinning, not any particular number above.
-    assert five_miles > two_miles > one_mile > nearly_there
 
 
 def test_the_band_describes_an_ordinary_journey_not_the_worst_one() -> None:

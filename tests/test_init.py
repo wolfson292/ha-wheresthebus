@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import degrees
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -30,6 +31,22 @@ from .fixtures import RIDER_INFO, STUDENT_SCANS, USER_INFO
 def freeze_time_local(*parts: int):
     """Freeze the clock at a local wall-clock time in Home Assistant's zone."""
     return freeze_time(datetime(*parts, tzinfo=dt_util.get_default_time_zone()))
+
+
+def _at_distance(miles: float) -> dict:
+    """Return a rider payload with the bus that far from the stop.
+
+    The estimate is built on WHERE the bus is, not how far, so a fixture that
+    moved `dist` while leaving the coordinates fixed would describe a bus
+    teleporting in place. This puts it due north of the stop at the asked-for
+    range, which is what the route match reads.
+    """
+    return {
+        **RIDER_INFO,
+        "dist": miles,
+        "busLat": RIDER_INFO["stpLat"] + degrees(miles / 3958.7613),
+        "busLon": RIDER_INFO["stpLon"],
+    }
 
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> MockConfigEntry:
@@ -374,13 +391,13 @@ async def test_arrival_is_learned_from_a_close_pass(
 
     # 08:02 local, inside the 07:26-08:26 pickup window, right at the stop.
     with freeze_time_local(2026, 8, 31, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     # Once the window has closed the observation is promoted to an arrival.
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -403,12 +420,12 @@ async def test_a_distant_pass_is_not_learned_as_an_arrival(
     buses = mock_config_entry.runtime_data.buses
 
     with freeze_time_local(2026, 8, 31, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.5)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -431,12 +448,12 @@ async def test_the_early_decoy_pass_is_not_learned(
     buses = mock_config_entry.runtime_data.buses
 
     with freeze_time_local(2026, 8, 31, 6, 13):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -509,7 +526,7 @@ async def _record_morning_arrival(
         ((9, 0), 5.0),
     ):
         with freeze_time_local(2026, 9, day, *moment):
-            mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": dist}
+            mock_api.async_get_rider_info.return_value = _at_distance(dist)
             await buses.async_refresh()
             await hass.async_block_till_done()
 
@@ -541,11 +558,11 @@ async def test_prediction_re_anchors_to_the_live_approach(
 
     # A third morning: the bus is a mile out at 07:52, four minutes early.
     with freeze_time_local(2026, 9, 3, 7, 50):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
         await hass.async_block_till_done()
     with freeze_time_local(2026, 9, 3, 7, 52):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -554,8 +571,8 @@ async def test_prediction_re_anchors_to_the_live_approach(
     assert prediction is not None
     # Answered from where the bus has got to along the route, which outranks
     # the rung ladder because it reconsiders on every position report.
-    assert prediction.basis == "progress"
-    assert prediction.progress_samples == 2
+    assert prediction.basis == "route"
+    assert prediction.route_samples == 2
     # Five minutes left from a mile out, as on both previous mornings — not
     # the 08:01 clock median.
     assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:57"
@@ -573,7 +590,7 @@ async def test_prediction_uses_clock_history_before_the_bus_is_close(
     )
 
     with freeze_time_local(2026, 9, 2, 7, 30):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 4.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(4.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -682,11 +699,11 @@ async def test_a_substitute_day_is_recorded_but_not_learned_from(
     buses = mock_config_entry.runtime_data.buses
 
     with freeze_time_local(2026, 9, 7, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
     with freeze_time_local(2026, 9, 7, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -716,12 +733,12 @@ async def test_a_learned_arrival_survives_a_restart(
     buses = mock_config_entry.runtime_data.buses
 
     with freeze_time_local(2026, 8, 31, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -745,25 +762,25 @@ async def test_the_estimate_re_anchors_as_the_bus_closes_in(
 
     # Day one: learn a four-minute leg from the 1 mile rung.
     with freeze_time_local(2026, 8, 31, 7, 56):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 7, 58):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     # Day two: the bus reaches the same rung ten minutes early.
     with freeze_time_local(2026, 9, 1, 7, 46):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
     with freeze_time_local(2026, 9, 1, 7, 48):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
         prediction = buses.predict_next_arrival(12345678)
 
@@ -783,25 +800,25 @@ async def test_a_bus_that_turns_back_out_stops_anchoring(
     buses = mock_config_entry.runtime_data.buses
 
     with freeze_time_local(2026, 8, 31, 7, 58):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 9, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
     with freeze_time_local(2026, 9, 1, 7, 38):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
     with freeze_time_local(2026, 9, 1, 7, 40):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
     # It drifted back out well past the rung without ever reaching the stop.
     with freeze_time_local(2026, 9, 1, 7, 44):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
         prediction = buses.predict_next_arrival(12345678)
 
@@ -875,10 +892,10 @@ async def test_a_weekend_run_is_predicted_once_it_has_been_seen(
 
     # A Saturday arrival, observed and learned.
     with freeze_time_local(2026, 9, 12, 8, 2):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
         await buses.async_refresh()
     with freeze_time_local(2026, 9, 12, 9, 30):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -900,37 +917,43 @@ async def test_a_restart_mid_run_rebuilds_what_it_missed(
     second arrival for the day.
     """
     readings = [
-        ("17:05:00", "2.7"),
-        ("17:13:00", "2.8"),
-        ("17:16:00", "0.9"),
-        ("17:20:00", "0.1"),
+        ("17:05:00", 2.7),
+        ("17:13:00", 2.8),
+        ("17:16:00", 0.9),
+        ("17:20:00", 0.1),
     ]
     history = [
         State(
-            "sensor.robin_alex_rivera_distance_to_stop",
-            value,
+            "device_tracker.robin_alex_rivera_bus",
+            "not_home",
+            {
+                "latitude": RIDER_INFO["stpLat"] + degrees(miles / 3958.7613),
+                "longitude": RIDER_INFO["stpLon"],
+                "stop_latitude": RIDER_INFO["stpLat"],
+                "stop_longitude": RIDER_INFO["stpLon"],
+            },
             last_updated=datetime.fromisoformat(f"2026-09-11T{clock}").replace(
                 tzinfo=dt_util.get_default_time_zone()
             ),
         )
-        for clock, value in readings
+        for clock, miles in readings
     ]
 
     # The distance sensor is looked up in the registry, which on a real
     # restart is already populated from the previous run.
     mock_config_entry.add_to_hass(hass)
     er.async_get(hass).async_get_or_create(
-        Platform.SENSOR,
+        "device_tracker",
         DOMAIN,
-        "12345678_distance_to_stop",
+        "12345678_bus",
         config_entry=mock_config_entry,
-        suggested_object_id="robin_alex_rivera_distance_to_stop",
+        suggested_object_id="robin_alex_rivera_bus",
     )
 
     with (
         freeze_time_local(2026, 9, 11, 17, 44),
         patch(
-            "custom_components.wheresthebus.coordinator.async_distance_history",
+            "custom_components.wheresthebus.coordinator.async_position_history",
             AsyncMock(return_value=history),
         ),
     ):
@@ -939,7 +962,7 @@ async def test_a_restart_mid_run_rebuilds_what_it_missed(
         buses = mock_config_entry.runtime_data.buses
 
         # The bus wanders back past on its way elsewhere.
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 4.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(4.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
         prediction = buses.predict_next_arrival(12345678)
@@ -962,7 +985,7 @@ async def test_the_journey_sensor_reports_the_current_stage(
 
     # Nothing doing in the middle of the day.
     with freeze_time_local(2026, 9, 14, 13, 0):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
         await buses.async_refresh()
         await hass.async_block_till_done()
 
@@ -1003,10 +1026,10 @@ async def test_the_prediction_reports_an_earliest_and_a_latest(
     )
 
     with freeze_time_local(2026, 9, 3, 7, 50):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        mock_api.async_get_rider_info.return_value = _at_distance(2.5)
         await buses.async_refresh()
     with freeze_time_local(2026, 9, 3, 7, 52):
-        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
+        mock_api.async_get_rider_info.return_value = _at_distance(0.9)
         await buses.async_refresh()
         await hass.async_block_till_done()
         prediction = buses.predict_next_arrival(12345678)

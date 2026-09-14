@@ -25,6 +25,13 @@ from .const import BACKFILL_DAYS, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
+def tracker_entity_id(hass: HomeAssistant, child_id: int) -> str | None:
+    """Return the bus tracker's entity id, whatever it was renamed to."""
+    return er.async_get(hass).async_get_entity_id(
+        "device_tracker", DOMAIN, f"{child_id}_bus"
+    )
+
+
 def distance_entity_id(hass: HomeAssistant, child_id: int) -> str | None:
     """Return the distance sensor's entity id, whatever it was renamed to."""
     return er.async_get(hass).async_get_entity_id(
@@ -68,6 +75,39 @@ async def async_distance_history(
             end,
             entity_id,
             no_attributes=True,
+            include_start_time_state=False,
+        )
+    )
+    return rows.get(entity_id, [])
+
+
+async def async_position_history(
+    hass: HomeAssistant, entity_id: str, days: int = BACKFILL_DAYS
+) -> list[State]:
+    """Return recent bus positions, or nothing if unavailable.
+
+    Unlike the distance history this keeps attributes, because latitude and
+    longitude are what a route match needs — a bus is often driving away from
+    the stop while making perfect progress, and only its position says so.
+    """
+    if "recorder" not in hass.config.components:
+        _LOGGER.debug("Recorder not loaded; skipping position replay")
+        return []
+
+    from homeassistant.components.recorder import get_instance  # noqa: PLC0415
+    from homeassistant.components.recorder.history import (  # noqa: PLC0415
+        state_changes_during_period,
+    )
+
+    end = dt_util.utcnow()
+    rows = await get_instance(hass).async_add_executor_job(
+        partial(
+            state_changes_during_period,
+            hass,
+            end - timedelta(days=days),
+            end,
+            entity_id,
+            no_attributes=False,
             include_start_time_state=False,
         )
     )

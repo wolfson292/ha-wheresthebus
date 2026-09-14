@@ -98,45 +98,34 @@ would rewrite itself on every poll, and Home Assistant renders a timestamp as
 relative time anyway. It also means alerting automations are plain `time`
 triggers with a negative offset — no templates.
 
-The estimate is answered from **where the bus has got to along the route**,
-whenever there is enough history to say. Every past journey's track records how
-far out the bus was at each moment before it arrived, so today's distance can
-be looked up against them: *the last time the bus was this far out, how long
-did it still have?* The median of those answers is what is left now.
+The estimate is answered by **matching where the bus is against where past
+journeys physically were**. Each arrival records the positions the bus passed
+through and how long it still had from each of them, so today's position can be
+looked up directly: *the last time a bus was here, how long did it take?*
 
-That is the only one of the three methods that reconsiders on every position
-report. A stop skipped because nobody was aboard puts the bus further along
-than usual for the time of day, and the estimate moves earlier immediately —
-where the rung ladder only reconsiders at four fixed distances, and the clock
-median does not respond at all. `prediction_basis` reads `progress`, and
-`progress_samples` says how many past journeys were far enough out to speak to
-today's distance.
+Straight-line distance to the stop cannot answer that, because a school bus is
+not travelling towards the stop. It serves other children, turns round in
+cul-de-sacs, and spends long stretches driving directly away — and measured as
+distance, every one of those looks like a setback. An estimate built on
+distance slides forward with the clock and never converges: observed moving
+twelve minutes later over twelve minutes while the bus worked stops four miles
+out, reporting "about twenty minutes away" the entire time.
 
-Because the answer is a set of remainders rather than one number, the estimate
-also reports the range it came from: `earliest`, `latest` and
-`uncertainty_minutes`. That band is not a fixed tolerance bolted onto a guess —
-it is how much past journeys disagree about the part of the route still to run,
-so **it closes towards nothing on its own as the bus nears the stop**.
+Matched as a position, none of that is ambiguous. A U-turn matches a U-turn. A
+pause outside another school matches the same pause. Standing still matches the
+same place, which has the same answer however long the bus sits there. And a
+bus that is genuinely running ahead — a stop skipped because nobody was aboard
+— matches a point that came late in previous journeys, so the estimate moves
+earlier immediately.
 
-It describes an **ordinary** journey rather than the worst one on record: the
-same outlier rejection used for the clock median is applied to the remainders
-first. One bus stuck behind a freight train would otherwise widen the band for
-weeks and leave it saying nothing. A genuinely unusual day can and will fall
-outside it, which is the right way round — a range wide enough to always be
-correct is worth nothing. Three
-journeys that differ by twenty minutes about a bus five miles out differ by
-half a minute about one at the end of the road. The same band is reported for
-the other two methods, from the rung's legs or from the spread of past arrival
-times, so the attribute always means the same thing.
+A route crosses itself, so the same junction is driven twice. Where several
+past positions are equally close, the one whose own elapsed time best matches
+today's wins, which is what separates the outbound pass from the homeward one.
 
-One subtlety: a bus weaves while it works a route, so the same distance recurs
-several times in a journey. Only the **last** occurrence counts — the first
-would measure from a pass through the same radius twenty minutes earlier.
-
-The whole ride is recorded, not just the approach: tracking starts when a scan
-says the rider is aboard. The ride home begins twenty to thirty minutes before
-the approach window would open, and that stretch is exactly where running ahead
-first shows up.
+`prediction_basis` reads `route`, and `route_samples` says how many past
+journeys came near this spot. When none did — a detour, or a substitute on
+another route — the estimate says so by falling back rather than reporting a
+confident number derived from nothing.
 
 Failing that, as the bus closes in the estimate **re-anchors to the live approach**. Each
 arrival records how long the rest of the journey took from 3, 2, 1 and 0.5

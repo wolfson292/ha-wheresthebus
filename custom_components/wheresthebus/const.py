@@ -144,7 +144,7 @@ BACKFILL_DAYS: Final = 14
 # learned under a narrower scheme are not wrong so much as incomplete —
 # 1.7.0 shipped a four-rung ladder that would otherwise have sat with only
 # the one rung its predecessor recorded, and behaved exactly as before.
-ARRIVAL_SCHEMA: Final = 5
+ARRIVAL_SCHEMA: Final = 6
 
 # The shape of each approach is kept alongside its timings: a list of
 # (seconds before arrival, distance) samples.  The ladder only records four
@@ -154,7 +154,22 @@ ARRIVAL_SCHEMA: Final = 5
 # fitted to journeys already recorded, instead of waiting months to collect
 # them again.  Samples closest to the arrival are kept when the cap bites,
 # because that is the part of the journey the estimate hangs on.
-TRACK_SAMPLE_LIMIT: Final = 80
+# Enough to cover a whole ride at the default poll interval, with headroom:
+# the afternoon run is around seventy minutes and the cap used to be forty,
+# so a route match could not reach back to where the journey began.
+TRACK_SAMPLE_LIMIT: Final = 200
+
+# Positions are stored to five decimal places, a little over a metre. Seven
+# would triple the size of the store to record GPS noise.
+COORD_PRECISION: Final = 5
+
+# How close a past position must be to count as the same place on the route.
+# Wide enough to absorb GPS scatter and a bus stopping on either side of a
+# road, tight enough that the outbound and homeward passes through the same
+# junction stay distinguishable.
+ROUTE_MATCH_RADIUS_MILES: Final = 0.25
+ROUTE_MATCH_RADIUS_KM: Final = 0.4
+MIN_ROUTE_SAMPLES: Final = 2
 
 ANCHOR_LADDER_MILES: Final = (3.0, 2.0, 1.0, 0.5)
 ANCHOR_LADDER_KM: Final = (4.8, 3.2, 1.6, 0.8)
@@ -235,6 +250,13 @@ ATTR_JOURNEY_ID: Final = "journey_id"
 # run going quickly - a stop skipped because nobody was aboard - where the
 # rung ladder only re-anchors at four fixed distances and the clock median
 # does not respond at all.
+# Where the bus is on the ROUTE, matched against where past journeys
+# physically were. This is the only basis that survives a bus driving away
+# from the stop, which it does constantly: it serves other children, turns
+# round in cul-de-sacs, and doubles back. Straight-line distance reads all of
+# that as setbacks, so an estimate built on it slides forward with the clock
+# and never converges.
+BASIS_ROUTE: Final = "route"
 BASIS_PROGRESS: Final = "progress"
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
@@ -256,6 +278,7 @@ ATTR_WINDOW_CENTRE: Final = "window_centre"
 # How many past journeys were far enough out to say anything about this
 # distance. Two is enough to take a median of; one is an anecdote.
 ATTR_PROGRESS_SAMPLES: Final = "progress_samples"
+ATTR_ROUTE_SAMPLES: Final = "route_samples"
 # The observed range this arrival has fallen in, judged the same way as the
 # estimate. Not a statistical interval — off a handful of journeys the honest
 # thing to show is the range actually seen. It closes towards nothing as the

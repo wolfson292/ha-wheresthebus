@@ -17,7 +17,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
-from .backfill import async_distance_history, distance_entity_id
+from .backfill import async_position_history, tracker_entity_id
 from .const import (
     ANCHOR_LADDER_KM,
     ANCHOR_LADDER_MILES,
@@ -30,14 +30,17 @@ from .const import (
     ARRIVAL_THRESHOLD_MILES,
     BASIS_APPROACH,
     BASIS_HISTORICAL,
-    BASIS_PROGRESS,
+    BASIS_ROUTE,
+    COORD_PRECISION,
     DAYS_AHEAD,
     DOMAIN,
     GPS_FIX_HYSTERESIS,
-    MIN_PROGRESS_SAMPLES,
+    MIN_ROUTE_SAMPLES,
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
     RECEDE_HYSTERESIS,
+    ROUTE_MATCH_RADIUS_KM,
+    ROUTE_MATCH_RADIUS_MILES,
     RUN_AM,
     RUN_PM,
     RUN_WINDOW_MINUTES,
@@ -55,10 +58,14 @@ from .const import (
     TRACK_SAMPLE_LIMIT,
 )
 from .journey import Journey, approach_is_open, journey_stage
+from .route import haversine_miles, nearest_remaining
 
 _LOGGER = logging.getLogger(__name__)
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+# The API reports distance in the account's own units; a haversine gives miles.
+_MILES_TO_KM = 1.609344
 
 # Local hour that separates the morning run from the afternoon run.
 _NOON = 12
@@ -102,7 +109,7 @@ class ArrivalPrediction:
     anchored_at: float | None = None
     anchor_samples: int | None = None
     # How many past journeys were far enough out to speak to today's distance.
-    progress_samples: int | None = None
+    route_samples: int | None = None
     # The earliest and latest this arrival has been, judged the same way as
     # the estimate itself. Not a statistical interval — the observed range,
     # which is the honest thing to show off a handful of journeys. It narrows
@@ -130,10 +137,12 @@ class RunArrival:
     # rung index. Empty for arrivals recorded before this was tracked, or
     # where the bus was already inside every rung when the window opened.
     legs: dict[int, int] = field(default_factory=dict)
-    # The shape of the approach: (seconds before arrival, distance) samples,
-    # oldest first. The ladder says when the bus passed four points; this says
-    # what it did in between, which is what a better model will need.
-    track: list[tuple[int, float]] = field(default_factory=list)
+    # Where the bus was: (seconds before arrival, latitude, longitude),
+    # oldest first. Positions rather than distances, because a school run is
+    # a route rather than an approach — the bus drives away from the stop
+    # constantly, serving other children and turning round, and only its
+    # position distinguishes that from a setback.
+    track: list[tuple[int, float, float]] = field(default_factory=list)
     # How often the bus crossed a rung and then fell back outside it. A run
     # with several of these was weaving through nearby stops, and its legs are
     # correspondingly less representative.
@@ -317,7 +326,7 @@ class ApproachRecorder:
     """
 
     crossings: dict[int, datetime] = field(default_factory=dict)
-    track: list[tuple[datetime, float]] = field(default_factory=list)
+    track: list[tuple[datetime, float, float]] = field(default_factory=list)
     recedes: int = 0
     stale: int = 0
     # Set once the bus has actually reached the stop. Everything after that is
@@ -333,15 +342,21 @@ class ApproachRecorder:
         when: datetime,
         distance: float,
         arrival_threshold: float,
+        position: tuple[float, float] | None = None,
         *,
         fresh: bool = True,
     ) -> None:
-        """Fold one distance reading into the approach."""
+        """Fold one reading into the approach.
+
+        ``distance`` drives the rungs and decides arrival; ``position`` is what
+        the route match reads back later.
+        """
         if self.arrived:
             # The journey is over; the bus pulling away is not new information.
             return
 
-        self.track.append((when, distance))
+        if position is not None:
+            self.track.append((when, position[0], position[1]))
         if not fresh:
             self.stale += 1
         if distance <= arrival_threshold:
@@ -385,11 +400,19 @@ class ApproachRecorder:
                 for rung, crossed in self.crossings.items()
                 if crossed <= arrival
             },
+            # Trim to the arrival FIRST, then take the cap. Capping first
+            # counts readings from after the bus had already been and gone
+            # against the budget, and throws away the approach itself — the
+            # part the whole estimate hangs on.
             "track": [
-                (int((arrival - when).total_seconds()), distance)
-                for when, distance in self.track[-TRACK_SAMPLE_LIMIT:]
+                (
+                    int((arrival - when).total_seconds()),
+                    round(lat, COORD_PRECISION),
+                    round(lon, COORD_PRECISION),
+                )
+                for when, lat, lon in self.track
                 if when <= arrival
-            ],
+            ][-TRACK_SAMPLE_LIMIT:],
             "recedes": self.recedes,
             "stale": self.stale,
         }
@@ -415,22 +438,27 @@ def _boarding_for(student: Student, run: str, day: date) -> datetime | None:
     return None
 
 
-def remaining_at(track: list[tuple[int, float]], distance: float) -> int | None:
-    """Return how long was left, last time a journey was this far out.
+def _fix_from(state: State, *, in_km: bool) -> tuple[float, float, float] | None:
+    """Read a recorded bus position as (distance, latitude, longitude).
 
-    ``track`` is (seconds before arrival, distance), oldest first. The bus
-    weaves while it works a route, so one distance can occur several times in
-    a journey; the LAST occurrence is the one that matters, because that is
-    the final approach rather than an earlier pass through the same radius.
-
-    Returns None when a journey never was that far out, which simply means it
-    has nothing to say about where the bus is now.
+    Distance is derived from the position rather than read from a separate
+    sensor, so one series carries both and the two cannot disagree. Returns
+    None for a row with no fix — an unavailable stretch, or the tracker before
+    the bus reported for the day.
     """
-    remaining: int | None = None
-    for age, sample in track:
-        if sample >= distance:
-            remaining = age
-    return remaining
+    attributes = state.attributes or {}
+    try:
+        lat = float(attributes["latitude"])
+        lon = float(attributes["longitude"])
+        distance = haversine_miles(
+            lat,
+            lon,
+            float(attributes["stop_latitude"]),
+            float(attributes["stop_longitude"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (distance * _MILES_TO_KM if in_km else distance), lat, lon
 
 
 def reconstruct_arrivals(
@@ -439,22 +467,29 @@ def reconstruct_arrivals(
     arrival_threshold: float,
     ladder: tuple[float, ...],
     learned: dict[str, time] | None = None,
+    *,
+    in_km: bool = False,
 ) -> list[RunArrival]:
-    """Find each run's arrival in a stretch of recorded distance readings.
+    """Find each run's arrival in a stretch of recorded bus positions.
+
+    Replays the tracker rather than the distance sensor, because a route match
+    needs to know where the bus was, not merely how far away. Distance is
+    derived from the position, so one series carries both and the two cannot
+    disagree.
 
     Applies exactly the filters the live path applies: the closest approach
     inside a run's window is that run's arrival, provided it actually reached
-    the stop, and the approach either side of it gives the rung timings.
+    the stop, and the positions either side of it become the route track.
     """
     learned = learned or {}
     best: dict[tuple[date, str], tuple[float, datetime]] = {}
     approaches: dict[tuple[date, str], ApproachRecorder] = {}
 
     for state in states:
-        try:
-            distance = float(state.state)
-        except (TypeError, ValueError):
+        fix = _fix_from(state, in_km=in_km)
+        if fix is None:
             continue
+        distance, lat, lon = fix
 
         when = state.last_updated
         local = dt_util.as_local(when)
@@ -468,7 +503,7 @@ def reconstruct_arrivals(
                 continue
             key = (local.date(), run)
             approaches.setdefault(key, ApproachRecorder()).sample(
-                ladder, when, distance, arrival_threshold
+                ladder, when, distance, arrival_threshold, (lat, lon)
             )
 
             arriving = run_window(scheduled, when, centre)
@@ -674,20 +709,20 @@ def _load_legs(item: dict[str, Any]) -> dict[int, int]:
 
 
 # Each track sample is stored as a bare (age, distance) pair.
-_TRACK_POINT_LENGTH = 2
+_TRACK_POINT_LENGTH = 3
 
 
-def _load_track(item: dict[str, Any]) -> list[tuple[int, float]]:
-    """Read a stored approach track, tolerating records written without one."""
+def _load_track(item: dict[str, Any]) -> list[tuple[int, float, float]]:
+    """Read a stored route track, discarding the older distance-only form."""
     raw = item.get("track")
     if not isinstance(raw, list):
         return []
-    track: list[tuple[int, float]] = []
+    track: list[tuple[int, float, float]] = []
     for point in raw:
         if not isinstance(point, (list, tuple)) or len(point) != _TRACK_POINT_LENGTH:
             continue
         try:
-            track.append((int(point[0]), float(point[1])))
+            track.append((int(point[0]), float(point[1]), float(point[2])))
         except (TypeError, ValueError):
             continue
     return track
@@ -979,7 +1014,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             self.distance_in_km = bool(info.get("isDistKm"))
             status, age = parse_bus_status(info.get("stsMsg"))
             self._note_gps_fix(child_id, status, age)
-            self._observe(child_id, student, info.get("dist"), status)
+            self._observe(child_id, student, info, status)
 
         if self._promote_pending():
             await self._async_save_arrivals()
@@ -1104,23 +1139,31 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         return self._learned_time(child_id, run)[0]
 
     def _observe(
-        self, child_id: int, student: Student, dist: Any, status: str | None = None
+        self,
+        child_id: int,
+        student: Student,
+        info: dict[str, Any],
+        status: str | None = None,
     ) -> None:
-        """Fold the current position reading into whichever run is active."""
-        if dist is None:
-            return
+        """Fold the current reading into whichever run is active."""
         try:
-            distance = float(dist)
-        except (TypeError, ValueError):
+            distance = float(info["dist"])
+        except (KeyError, TypeError, ValueError):
             return
 
         # Anything but a current fix means the distance behind it was
         # extrapolated, which is what the stale count is recording.
+        try:
+            position = (float(info["busLat"]), float(info["busLon"]))
+        except (KeyError, TypeError, ValueError):
+            position = None
+
         self._fold_reading(
             child_id,
             student,
             dt_util.utcnow(),
             distance,
+            position,
             fresh=status == STATUS_CURRENT,
         )
 
@@ -1130,6 +1173,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         student: Student,
         when: datetime,
         distance: float,
+        position: tuple[float, float] | None = None,
         *,
         fresh: bool = True,
     ) -> None:
@@ -1153,7 +1197,12 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             centre = self._window_centre(child_id, run)
             key = (child_id, run, local.date())
             self._approach.setdefault(key, ApproachRecorder()).sample(
-                self._ladder, when, distance, self._arrival_threshold, fresh=fresh
+                self._ladder,
+                when,
+                distance,
+                self._arrival_threshold,
+                position,
+                fresh=fresh,
             )
 
             arriving = run_window(scheduled, when, centre)
@@ -1178,28 +1227,30 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         """
         students = self.students.data or {}
         for child_id, student in students.items():
-            entity_id = distance_entity_id(self.hass, child_id)
+            entity_id = tracker_entity_id(self.hass, child_id)
             if entity_id is None:
                 continue
             try:
-                rows = await async_distance_history(self.hass, entity_id, days=1)
+                rows = await async_position_history(self.hass, entity_id, days=1)
             except Exception:
                 _LOGGER.exception("Could not replay today's %s history", entity_id)
                 continue
 
             today = dt_util.as_local(dt_util.utcnow()).date()
             for state in rows:
-                try:
-                    distance = float(state.state)
-                except (TypeError, ValueError):
+                fix = _fix_from(state, in_km=self.distance_in_km)
+                if fix is None:
                     continue
+                distance, lat, lon = fix
                 # Strictly today. The recorder query spans 24 hours, so without
                 # this a morning restart would replay yesterday afternoon into
                 # yesterday's run and promote a second arrival for a day that
                 # already has one.
                 if dt_util.as_local(state.last_updated).date() != today:
                     continue
-                self._fold_reading(child_id, student, state.last_updated, distance)
+                self._fold_reading(
+                    child_id, student, state.last_updated, distance, (lat, lon)
+                )
 
         if self._approach:
             _LOGGER.debug("Restored %d run(s) already in progress", len(self._approach))
@@ -1372,11 +1423,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
         recovered: dict[int, list[RunArrival]] = {}
         for child_id, student in students.items():
-            entity_id = distance_entity_id(self.hass, child_id)
+            entity_id = tracker_entity_id(self.hass, child_id)
             if entity_id is None:
                 continue
             try:
-                rows = await async_distance_history(self.hass, entity_id)
+                rows = await async_position_history(self.hass, entity_id)
             except Exception:
                 _LOGGER.exception(
                     "Could not read %s history from the recorder", entity_id
@@ -1467,7 +1518,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             # Pairs rather than objects: the track is by far
                             # the biggest thing in this store, and keys
                             # repeated 80 times an arrival add up fast.
-                            "track": [[age, dist] for age, dist in item.track],
+                            "track": [[age, lat, lon] for age, lat, lon in item.track],
                             "recedes": item.recedes,
                             "stale": item.stale,
                             "boarded": (
@@ -1505,20 +1556,20 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             # Where the bus has got to along the route beats both the rung
             # ladder and the clock, because it is the only one of the three
             # that reconsiders on every position report.
-            progress = self._progress_arrival(child_id, run, local_now)
-            if progress is not None and self._watching(child_id, run, local_now):
-                when, seen, soonest, latest = progress
+            on_route = self._route_arrival(child_id, run, local_now)
+            if on_route is not None and self._watching(child_id, run, local_now):
+                when, seen, soonest, latest = on_route
                 candidates.append(
                     ArrivalPrediction(
                         run=run,
                         arrival=dt_util.as_utc(when),
                         source=SOURCE_LEARNED,
-                        basis=BASIS_PROGRESS,
+                        basis=BASIS_ROUTE,
                         samples=samples,
                         spread=spread,
                         outliers=outliers,
                         scheduled=scheduled,
-                        progress_samples=seen,
+                        route_samples=seen,
                         earliest=dt_util.as_utc(soonest),
                         latest=dt_util.as_utc(latest),
                         centre=learned or scheduled,
@@ -1582,46 +1633,56 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return None
         return min(candidates, key=lambda item: item.arrival)
 
-    def _progress_arrival(
+    def _route_arrival(
         self, child_id: int, run: str, local_now: datetime
     ) -> tuple[datetime, int, datetime, datetime] | None:
-        """Estimate arrival from how far along the route the bus already is.
+        """Estimate arrival from where the bus is on its route.
 
-        Every past journey's track says how far out the bus was at each moment
-        before it arrived. Inverting that gives, for today's distance, how long
-        each past journey still had to run from there; the median of those is
-        what is left now.
+        Past journeys recorded where the bus physically was, and how long it
+        still had from each of those places. Matching today's position against
+        them answers directly: a U-turn matches a U-turn, a pause outside
+        another school matches the same pause, and a bus genuinely running
+        ahead matches a point that came late in previous journeys.
 
-        This is what makes the estimate respond to the route rather than the
-        clock. A stop skipped because nobody was aboard puts the bus further
-        along than usual for the time of day, and the estimate moves earlier
-        the moment the next position arrives - where the rung ladder only
-        reconsiders at four fixed distances, and the clock median never does.
+        This is the only estimate that survives the bus driving away from the
+        stop, which it does constantly. Straight-line distance reads that as a
+        setback, so an estimate built on it slides forward with the clock and
+        never converges: observed on 14 Sep moving twelve minutes later over
+        twelve minutes while the bus worked stops four miles out.
+
+        Returns None when no past journey came near this spot — a detour, a
+        substitute on another route — which is worth saying rather than
+        guessing confidently.
         """
         info = (self.data or {}).get(child_id) or {}
         try:
-            distance = float(info["dist"])
+            lat = float(info["busLat"])
+            lon = float(info["busLon"])
         except (KeyError, TypeError, ValueError):
             return None
 
+        journey = self._approach.get((child_id, run, local_now.date()))
+        elapsed = None
+        if journey and journey.track:
+            elapsed = int((local_now - journey.track[0][0]).total_seconds())
+
+        radius = (
+            ROUTE_MATCH_RADIUS_KM if self.distance_in_km else ROUTE_MATCH_RADIUS_MILES
+        )
         remainders = sorted(
             left
             for item in self._arrivals.get(child_id, [])
             if item.run == run
             and not item.substitute
             and item.track
-            and (left := remaining_at(item.track, distance)) is not None
+            and (left := nearest_remaining(item.track, lat, lon, elapsed, radius))
+            is not None
         )
-        if len(remainders) < MIN_PROGRESS_SAMPLES:
+        if len(remainders) < MIN_ROUTE_SAMPLES:
             return None
 
-        # The band describes an ordinary journey, not the worst one on record.
-        # One bus stuck behind a freight train would otherwise widen it for
-        # weeks and make it say nothing. A genuinely unusual day can and will
-        # fall outside it — that is the trade, and the right way round.
         usual, _ = _reject_outliers(remainders, floor=OUTLIER_FLOOR_MINUTES * 60)
         estimate = local_now + timedelta(seconds=_median(usual))
-        # Already overdue against this means it has arrived, or is about to.
         if estimate <= local_now:
             return None
         return (
