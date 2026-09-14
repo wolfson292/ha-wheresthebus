@@ -424,6 +424,7 @@ def test_reconstruct_arrivals_ignores_a_run_that_never_reached_the_stop() -> Non
 def test_reconstruct_arrivals_skips_unparseable_readings() -> None:
     """Unavailable and unknown rows are gaps, not distances."""
     states = [
+        _reading(_local(7, 49), "2.5"),
         _reading(_local(7, 50), "unavailable"),
         _reading(_local(7, 52, 47), "0.9"),
         _reading(_local(7, 54), "unknown"),
@@ -459,6 +460,9 @@ def test_reconstruct_arrivals_records_every_rung_crossed() -> None:
     estimate still said fifteen.
     """
     states = [
+        # Starts outside the widest rung: a rung is crossed by moving from
+        # outside it to inside, so the first reading can only be a baseline.
+        _reading(_local(7, 45), "3.6"),
         _reading(_local(7, 46, 47), "3.0"),
         _reading(_local(7, 50, 47), "2.0"),
         _reading(_local(7, 52, 47), "1.0"),
@@ -474,7 +478,15 @@ def test_reconstruct_arrivals_records_every_rung_crossed() -> None:
 
 
 def test_reconstruct_arrivals_records_only_rungs_actually_crossed() -> None:
-    """A bus first seen close by has no reading at the outer rungs."""
+    """A bus first seen close by has no timing for the rungs it was inside.
+
+    Being inside a rung is not the same as having been watched crossing it.
+    On 14 Sep the bus sat parked at exactly 3.0 miles from 06:58, and the
+    first reading once watching began at 07:16 was taken as "just crossed
+    three miles". The typical nine-and-a-half minute leg was measured from
+    there, predicting 07:25 for a bus that arrived at 08:01, and the five
+    minute warning duly went out at 07:20.
+    """
     states = [
         _reading(_local(7, 55, 47), "0.5"),
         _reading(_local(7, 56, 47), "0.0"),
@@ -482,9 +494,10 @@ def test_reconstruct_arrivals_records_only_rungs_actually_crossed() -> None:
 
     arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
 
-    # 0.5 is inside every rung, so all of them are crossed at that moment.
-    assert set(arrivals[0].legs) == {0, 1, 2, 3}
-    assert arrivals[0].legs[3] == 60
+    # It was already inside every rung when first seen, so not one of them can
+    # honestly be timed. The estimate falls through to the clock median rather
+    # than inventing a crossing.
+    assert arrivals[0].legs == {}
 
 
 def _scan(when: datetime, kind: str) -> ScanEvent:
@@ -687,6 +700,9 @@ def test_a_crossing_is_discarded_when_the_bus_turns_back_out() -> None:
     early, so a crossing only counts while the bus keeps closing.
     """
     states = [
+        # Outside the rung first, so the 17:05 touch is a genuine crossing and
+        # the recede has something real to discard.
+        _reading(_local(17, 3, day=11), "4.0"),
         _reading(_local(17, 5, day=11), "2.7"),
         _reading(_local(17, 11, day=11), "3.8"),
         _reading(_local(17, 13, day=11), "2.8"),
@@ -705,6 +721,7 @@ def test_a_crossing_is_discarded_when_the_bus_turns_back_out() -> None:
 def test_the_bus_leaving_again_does_not_undo_its_approach() -> None:
     """Readings after the stop are the bus departing, not the approach failing."""
     states = [
+        _reading(_local(7, 50), "2.5"),
         _reading(_local(7, 52, 47), "0.9"),
         _reading(_local(7, 56, 47), "0.0"),
         _reading(_local(8, 4), "1.3"),
@@ -754,3 +771,41 @@ def test_the_track_keeps_the_samples_nearest_the_arrival() -> None:
     assert [point[0] for point in track] == sorted(
         (point[0] for point in track), reverse=True
     )
+
+
+def test_a_bus_parked_inside_a_rung_is_not_treated_as_crossing_it() -> None:
+    """Replays 14 Sep, when a parked bus produced a five-minute warning at 07:20.
+
+    The decoy pass came and went before watching began, leaving the bus parked
+    at exactly 3.0 miles. The first reading once the window opened was taken as
+    "just crossed three miles"; the typical nine-and-a-half minute leg was
+    measured from there, predicting 07:25 for a bus that arrived at 08:01.
+
+    Being inside a rung is not the same as having been seen cross it.
+    """
+    states = [
+        # Parked at the rung for the whole of the watched period, then a real
+        # approach starting at 07:50.
+        _reading(_local(7, 16, 17, day=14), "3.0"),
+        _reading(_local(7, 30, day=14), "3.0"),
+        _reading(_local(7, 50, 48, day=14), "2.9"),
+        _reading(_local(7, 58, day=14), "1.4"),
+        _reading(_local(8, 1, day=14), "0.1"),
+    ]
+
+    arrivals = reconstruct_arrivals(
+        states, _rider(), 0.3, LADDER, {"am": parse_stop_time("8:01 A.M.")}
+    )
+
+    assert len(arrivals) == 1
+    legs = arrivals[0].legs
+    # Never watched crossing 3 miles — it was already there — so that rung
+    # carries no timing at all rather than a bogus one.
+    assert 0 not in legs
+    # The rungs it was genuinely seen crossing are timed as usual.
+    assert legs[1] == 3 * 60  # 2 miles at 07:58 -> 08:01
+    # It was still at 1.4 at 07:58 and inside 0.3 by 08:01, so the inner rungs
+    # were crossed somewhere in that gap and can only be timed to the reading
+    # that found it inside. Coarse sampling, honestly recorded.
+    assert legs[2] == 0
+    assert legs[3] == 0

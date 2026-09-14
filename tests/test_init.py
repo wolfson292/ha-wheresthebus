@@ -498,7 +498,12 @@ async def _record_morning_arrival(
 ) -> None:
     """Drive one morning: cross the anchor, reach the stop, close the window."""
     buses = mock_config_entry.runtime_data.buses
+    # A reading from outside the rungs first. A rung is crossed by moving from
+    # outside it to inside, so a lone close reading establishes a baseline and
+    # times nothing — which is the whole point of the 14 Sep fix.
+    approaching = (crossed[0], crossed[1] - 2)
     for moment, dist in (
+        (approaching, 2.5),
         (crossed, 0.9),
         (arrived, 0.0),
         ((9, 0), 5.0),
@@ -535,6 +540,10 @@ async def test_prediction_re_anchors_to_the_live_approach(
         )
 
     # A third morning: the bus is a mile out at 07:52, four minutes early.
+    with freeze_time_local(2026, 9, 3, 7, 50):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
     with freeze_time_local(2026, 9, 3, 7, 52):
         mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
         await buses.async_refresh()
@@ -731,6 +740,9 @@ async def test_the_estimate_re_anchors_as_the_bus_closes_in(
     buses = mock_config_entry.runtime_data.buses
 
     # Day one: learn a four-minute leg from the 1 mile rung.
+    with freeze_time_local(2026, 8, 31, 7, 56):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
     with freeze_time_local(2026, 8, 31, 7, 58):
         mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
         await buses.async_refresh()
@@ -743,6 +755,9 @@ async def test_the_estimate_re_anchors_as_the_bus_closes_in(
         await hass.async_block_till_done()
 
     # Day two: the bus reaches the same rung ten minutes early.
+    with freeze_time_local(2026, 9, 1, 7, 46):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
     with freeze_time_local(2026, 9, 1, 7, 48):
         mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
         await buses.async_refresh()
@@ -774,6 +789,9 @@ async def test_a_bus_that_turns_back_out_stops_anchoring(
         await buses.async_refresh()
         await hass.async_block_till_done()
 
+    with freeze_time_local(2026, 9, 1, 7, 38):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 2.5}
+        await buses.async_refresh()
     with freeze_time_local(2026, 9, 1, 7, 40):
         mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 0.9}
         await buses.async_refresh()

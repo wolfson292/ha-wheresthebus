@@ -115,6 +115,14 @@ Three things make the observations trustworthy:
   crossed the 3, 2 and 1 mile rungs. Every one was discarded and the estimate
   ran on the clock median all afternoon. Until a run has been observed at all,
   the timetable is the centre.
+- **A rung is crossed, not occupied.** A crossing is recorded only when the bus
+  moves from outside a rung to inside it. Being inside one when watching begins
+  proves nothing about when it got there: on one morning the bus sat parked at
+  exactly 3 miles, and the first reading after the window opened was read as
+  "just crossed three miles". The usual nine-and-a-half minute leg was measured
+  from that, predicting 07:25 for a bus that arrived at 08:01, and a five
+  minute warning went out at 07:20. A rung the bus was already inside simply
+  carries no timing for that day.
 - **A rung only counts while the bus keeps closing.** A bus that crosses a rung
   and then drifts back outside it by more than 15%, without ever reaching the
   stop, loses that crossing — it was serving nearby stops, not making its final

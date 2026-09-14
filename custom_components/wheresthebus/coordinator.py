@@ -306,6 +306,9 @@ class ApproachRecorder:
     # Set once the bus has actually reached the stop. Everything after that is
     # the bus leaving again, and must not be read as the approach coming apart.
     arrived: bool = False
+    # The distance from the previous reading. A rung is crossed by moving from
+    # outside it to inside it, which cannot be judged from one reading alone.
+    previous: float | None = None
 
     def sample(
         self,
@@ -328,7 +331,12 @@ class ApproachRecorder:
             self.arrived = True
 
         for rung, threshold in enumerate(ladder):
-            if distance <= threshold:
+            crossed_inward = (
+                self.previous is not None
+                and self.previous > threshold
+                and distance <= threshold
+            )
+            if crossed_inward:
                 self.crossings.setdefault(rung, when)
             elif (
                 not self.arrived
@@ -340,6 +348,17 @@ class ApproachRecorder:
                 # not anchor anything.
                 del self.crossings[rung]
                 self.recedes += 1
+
+        # Deliberately last, and deliberately unconditional: a rung the bus was
+        # already inside when watching began gets no crossing at all. On 14 Sep
+        # the bus sat parked at exactly 3.0 miles from 06:58, and the first
+        # reading after the window opened at 07:16 was read as "just crossed
+        # the 3 mile rung". The typical nine-and-a-half minute leg was hung off
+        # that, predicting 07:25 for a bus that came at 08:01, and the five
+        # minute warning went out at 07:20. We never saw it cross, so we cannot
+        # time it: that rung simply has no data today, and the estimate falls
+        # through to the next rung the bus is genuinely watched crossing.
+        self.previous = distance
 
     def finish(self, arrival: datetime) -> dict[str, Any]:
         """Return the fields describing this approach, given when it ended."""
@@ -1029,10 +1048,17 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 _LOGGER.exception("Could not replay today's %s history", entity_id)
                 continue
 
+            today = dt_util.as_local(dt_util.utcnow()).date()
             for state in rows:
                 try:
                     distance = float(state.state)
                 except (TypeError, ValueError):
+                    continue
+                # Strictly today. The recorder query spans 24 hours, so without
+                # this a morning restart would replay yesterday afternoon into
+                # yesterday's run and promote a second arrival for a day that
+                # already has one.
+                if dt_util.as_local(state.last_updated).date() != today:
                     continue
                 self._fold_reading(child_id, student, state.last_updated, distance)
 
