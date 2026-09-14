@@ -230,3 +230,34 @@ def test_the_journey_id_does_not_change_mid_ride() -> None:
     late = _stage(now=_at(9, 20), last_pickup=_at(8, 1), school_arrival=_at(9, 25))
 
     assert early.journey_id == late.journey_id == "20260914-am"
+
+
+def test_an_afternoon_drop_off_scan_means_home_not_school() -> None:
+    """A drop-off scan says she got off the bus, not where.
+
+    Which it was depends on the run. Reading every drop-off as the school
+    announced "Arrived at school — dropped off safely" as she stepped off the
+    bus outside the house.
+    """
+    journey = _stage(
+        now=_at(17, 22),
+        distance=0.0,
+        last_pickup=_at(16, 21),
+        last_dropoff=_at(17, 20),
+        next_arrival=_at(17, 20),
+    )
+
+    assert journey.stage == "home"
+    assert journey.progress == 100
+
+
+def test_a_morning_drop_off_scan_still_means_school() -> None:
+    """The same scan, earlier in the day, is the school."""
+    journey = _stage(
+        now=_at(9, 24),
+        last_pickup=_at(8, 1),
+        last_dropoff=_at(9, 23),
+        school_arrival=_at(9, 25),
+    )
+
+    assert journey.stage == "at_school"

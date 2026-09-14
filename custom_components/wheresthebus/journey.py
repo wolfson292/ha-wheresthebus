@@ -119,12 +119,23 @@ def journey_stage(
     """
     at_stop = distance is not None and distance <= arrival_threshold
 
-    # 1. Just dropped at school. Holds briefly, then lets the day go quiet.
+    # 1. Just scanned off the bus. Holds briefly, then lets the day go quiet.
+    #
+    #    WHERE she got off depends on which run it was. A drop-off scan in the
+    #    morning is the school; in the afternoon it is the home stop. Reading
+    #    every drop-off as the school announced "Arrived at school — dropped
+    #    off safely" as she stepped off the bus outside the house.
+    #
+    #    That assumption held only because the home leg went unscanned for the
+    #    first eight days observed. It is being scanned now, which is better
+    #    data and a reminder that "never happens" is a thing to check rather
+    #    than build on.
     if _same_day(last_dropoff, now) and last_dropoff is not None:
         since = (now - dt_util.as_local(last_dropoff)).total_seconds()
         if 0 <= since <= ARRIVED_DWELL_MINUTES * 60:
+            at_school = _run_of(last_dropoff) == RUN_AM
             return Journey(
-                stage=STAGE_AT_SCHOOL,
+                stage=STAGE_AT_SCHOOL if at_school else STAGE_HOME,
                 progress=100,
                 journey_id=_journey_id(last_dropoff),
             )

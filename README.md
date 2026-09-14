@@ -62,10 +62,10 @@ with the numbers that belong to it:
 | `to_stop` | Bus approaching the home stop, morning | Distance closed from 3 miles |
 | `at_stop` | Bus at the stop — time to board | 100 |
 | `to_school` | Aboard, riding to school | Elapsed against the learned ride |
-| `at_school` | Dropped off, briefly | 100 |
+| `at_school` | Scanned off at school, briefly | 100 |
 | `from_school` | Aboard, riding home | Elapsed against the predicted arrival |
 | `to_home` | Bus approaching home, afternoon | Distance closed from 3 miles |
-| `home` | Bus at the stop | 100 |
+| `home` | At the home stop, or scanned off there | 100 |
 
 Alongside it: `target` (the instant being counted towards), `boarded`, and
 `journey_id` — a date-plus-run identifier so a notification carrying it can
@@ -200,6 +200,12 @@ Three things make the observations trustworthy:
   undo the approach that preceded them.
 - **The bus must actually reach the stop** (within 0.3 mi). On a run where
   nobody boards, the route can stay half a mile out; that is not an arrival.
+
+A drop-off scan says the rider got off the bus, not *where*. Which it was
+depends on the run: in the morning it is the school, in the afternoon the home
+stop. The afternoon leg went unscanned for the first eight days observed here,
+and building on that produced an activity announcing "Arrived at school" as she
+stepped off the bus outside the house.
 
 `anchored_at` and `anchor_samples` report which rung the live estimate is
 hanging on and how many past journeys back it; both are absent when the
