@@ -28,6 +28,7 @@ from .const import (
     ARRIVAL_STORAGE_VERSION,
     ARRIVAL_THRESHOLD_KM,
     ARRIVAL_THRESHOLD_MILES,
+    BACKFILL_DAYS,
     BASIS_APPROACH,
     BASIS_HISTORICAL,
     BASIS_ROUTE,
@@ -1103,6 +1104,32 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         if standing is None or abs(observed - standing) > GPS_FIX_HYSTERESIS:
             self._gps_fix[child_id] = observed
 
+    def _replay_windows(
+        self, child_id: int, student: Student, days: int
+    ) -> list[tuple[datetime, datetime]]:
+        """Return the stretches worth asking the recorder about.
+
+        Two runs a school day, about seventy-five minutes apiece. Asking for
+        the whole span instead would return mostly a bus parked overnight, at
+        a cost that held up Home Assistant starting.
+        """
+        local_now = dt_util.as_local(dt_util.utcnow())
+        windows: list[tuple[datetime, datetime]] = []
+        for back in range(days):
+            day = local_now - timedelta(days=back)
+            for run, scheduled in (
+                (RUN_AM, student.am_scheduled),
+                (RUN_PM, student.pm_scheduled),
+            ):
+                window = approach_window(
+                    scheduled, day, self._window_centre(child_id, run)
+                )
+                if window is not None:
+                    windows.append(
+                        (dt_util.as_utc(window[0]), dt_util.as_utc(window[1]))
+                    )
+        return windows
+
     def _watching(self, child_id: int, run: str, local: datetime) -> bool:
         """Return whether this run's route is worth recording at this instant.
 
@@ -1231,7 +1258,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if entity_id is None:
                 continue
             try:
-                rows = await async_position_history(self.hass, entity_id, days=1)
+                rows = await async_position_history(
+                    self.hass, entity_id, self._replay_windows(child_id, student, 1)
+                )
             except Exception:
                 _LOGGER.exception("Could not replay today's %s history", entity_id)
                 continue
@@ -1427,7 +1456,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if entity_id is None:
                 continue
             try:
-                rows = await async_position_history(self.hass, entity_id)
+                rows = await async_position_history(
+                    self.hass,
+                    entity_id,
+                    self._replay_windows(child_id, student, BACKFILL_DAYS),
+                )
             except Exception:
                 _LOGGER.exception(
                     "Could not read %s history from the recorder", entity_id

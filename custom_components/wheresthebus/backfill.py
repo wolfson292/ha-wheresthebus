@@ -13,7 +13,7 @@ alongside the run-window logic it depends on.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 
 from homeassistant.core import HomeAssistant, State
@@ -82,16 +82,23 @@ async def async_distance_history(
 
 
 async def async_position_history(
-    hass: HomeAssistant, entity_id: str, days: int = BACKFILL_DAYS
+    hass: HomeAssistant, entity_id: str, windows: list[tuple[datetime, datetime]]
 ) -> list[State]:
-    """Return recent bus positions, or nothing if unavailable.
+    """Return recorded bus positions inside the given windows.
 
-    Unlike the distance history this keeps attributes, because latitude and
-    longitude are what a route match needs — a bus is often driving away from
-    the stop while making perfect progress, and only its position says so.
+    Positions have to be read WITH their attributes, because latitude and
+    longitude live there — and that is expensive in a way the old distance
+    query was not. A fortnight of a thirty second poll is tens of thousands of
+    rows, each carrying a full attribute dict, and almost all of them are of a
+    bus parked overnight at the depot.
+
+    So it asks only for the stretches a run could be in: roughly seventy-five
+    minutes twice a school day, which is a small fraction of the same span.
     """
     if "recorder" not in hass.config.components:
         _LOGGER.debug("Recorder not loaded; skipping position replay")
+        return []
+    if not windows:
         return []
 
     from homeassistant.components.recorder import get_instance  # noqa: PLC0415
@@ -99,16 +106,18 @@ async def async_position_history(
         state_changes_during_period,
     )
 
-    end = dt_util.utcnow()
-    rows = await get_instance(hass).async_add_executor_job(
-        partial(
-            state_changes_during_period,
-            hass,
-            end - timedelta(days=days),
-            end,
-            entity_id,
-            no_attributes=False,
-            include_start_time_state=False,
-        )
-    )
-    return rows.get(entity_id, [])
+    def _fetch() -> list[State]:
+        found: list[State] = []
+        for start, end in windows:
+            rows = state_changes_during_period(
+                hass,
+                start,
+                end,
+                entity_id,
+                no_attributes=False,
+                include_start_time_state=False,
+            )
+            found.extend(rows.get(entity_id, []))
+        return sorted(found, key=lambda state: state.last_updated)
+
+    return await get_instance(hass).async_add_executor_job(_fetch)

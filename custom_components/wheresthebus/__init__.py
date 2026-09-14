@@ -83,13 +83,21 @@ async def async_setup_entry(
     # the bus passing by on its way elsewhere reads as a fresh approach.
     await buses.async_restore_in_flight()
     await buses.async_config_entry_first_refresh()
-    # The distance sensor has been recording all along, so past arrivals can be
-    # recovered rather than waiting a week to relearn them.
-    await buses.async_backfill_arrivals()
 
     entry.runtime_data = WheresTheBusData(api=api, students=students, buses=buses)
     _remove_retired_entities(hass, entry, students.data or {})
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # The tracker has been recording all along, so past arrivals can be
+    # recovered rather than waiting a week to relearn them — but in the
+    # background, never on the setup path. Positions have to be read WITH
+    # their attributes, which for a fortnight at a thirty second poll is tens
+    # of thousands of rows: awaiting that held up the whole of Home Assistant
+    # starting. Nothing needs the result to be there before the first poll,
+    # only the in-flight rebuild above does, and that reads a single day.
+    entry.async_create_background_task(
+        hass, buses.async_backfill_arrivals(), "wheresthebus_backfill"
+    )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
