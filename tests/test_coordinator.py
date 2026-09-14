@@ -882,3 +882,49 @@ def test_too_few_journeys_to_judge_keeps_them_all() -> None:
         [600, 2400],
         0,
     )
+
+
+def test_a_record_with_the_route_beats_one_with_only_the_rungs() -> None:
+    """Upgrading to positions must not lose to the record it replaces.
+
+    A stored arrival written before positions were kept has its four rungs and
+    an empty track. The replay that rebuilds it has the same four rungs AND
+    the route. Ranking on rungs alone made that a tie, the incumbent won, and
+    the positions were discarded the moment they arrived — leaving the route
+    match with nothing to work from, on that restart and every one after.
+    """
+    when = dt_util.as_utc(_local(8, 1))
+    rungs_only = RunArrival(
+        run="am", arrival=when, closest=0.1, legs={0: 600, 1: 360, 2: 240, 3: 60}
+    )
+    with_route = RunArrival(
+        run="am",
+        arrival=when,
+        closest=0.1,
+        legs={0: 600, 1: 360, 2: 240, 3: 60},
+        track=[(600, 26.49, -81.86), (0, 26.45, -81.83)],
+    )
+
+    merged = _merge_arrivals([rungs_only], [with_route])
+
+    assert len(merged) == 1
+    assert merged[0].track == with_route.track
+
+
+def test_more_rungs_still_wins_over_a_longer_track() -> None:
+    """Rungs first, route second — a fuller ladder is the better record."""
+    when = dt_util.as_utc(_local(8, 1))
+    thin_ladder = RunArrival(
+        run="am",
+        arrival=when,
+        closest=0.1,
+        legs={3: 60},
+        track=[(0, 26.45, -81.83)] * 9,
+    )
+    full_ladder = RunArrival(
+        run="am", arrival=when, closest=0.1, legs={0: 600, 1: 360, 2: 240, 3: 60}
+    )
+
+    merged = _merge_arrivals([thin_ladder], [full_ladder])
+
+    assert sorted(merged[0].legs) == [0, 1, 2, 3]

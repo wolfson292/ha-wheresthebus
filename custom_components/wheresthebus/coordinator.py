@@ -776,12 +776,22 @@ def _merge_arrivals(
     carrying a fuller record was discarded as already known, so the four-rung
     ladder kept losing to the single rung an older version had written, and
     the morning estimate never re-anchored.
+
+    "Knows more" has to count the route track as well as the rungs. Ranking on
+    rungs alone let an old record with four rungs and no positions beat a
+    replayed one with the same four rungs and the whole route — so the
+    positions the route match needs were discarded the moment they arrived,
+    and would have been on every restart thereafter.
     """
+
+    def knows(item: RunArrival) -> tuple[int, int]:
+        return len(item.legs), len(item.track)
+
     by_run_day: dict[tuple[str, date], RunArrival] = {}
     for item in [*existing, *fresh]:
         key = (item.run, dt_util.as_local(item.arrival).date())
         current = by_run_day.get(key)
-        if current is None or len(item.legs) > len(current.legs):
+        if current is None or knows(item) > knows(current):
             by_run_day[key] = item
     return sorted(by_run_day.values(), key=lambda item: item.arrival)
 
