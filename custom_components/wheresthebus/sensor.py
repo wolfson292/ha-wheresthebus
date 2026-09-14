@@ -24,6 +24,7 @@ from .const import (
     ATTR_ANCHOR_DISTANCE,
     ATTR_ANCHOR_SAMPLES,
     ATTR_BUS_NUMBER,
+    ATTR_JOURNEY_ID,
     ATTR_OUTLIERS_EXCLUDED,
     ATTR_PREDICTION_BASIS,
     ATTR_PREDICTION_SOURCE,
@@ -36,15 +37,20 @@ from .const import (
     ATTR_SCHEDULED,
     ATTR_SCHOOL_NAME,
     ATTR_SPREAD_MINUTES,
+    ATTR_STAGE_BOARDED,
+    ATTR_STAGE_PROGRESS,
+    ATTR_STAGE_TARGET,
     ATTR_STOP_ADDRESS,
     ATTR_STUDENT_ID,
     ATTR_SUBSTITUTE_BUS,
     ATTR_WINDOW_CENTRE,
     BUS_STATUS_OPTIONS,
+    JOURNEY_STAGES,
     SCAN_DROPOFF,
     SCAN_PICKUP,
 )
 from .coordinator import (
+    Journey,
     ScanEvent,
     Student,
     WheresTheBusBusCoordinator,
@@ -175,6 +181,7 @@ async def async_setup_entry(
             WheresTheBusBusSensor(data.buses, data.students, child_id, description)
             for description in BUS_SENSORS
         )
+        entities.append(WheresTheBusJourneySensor(data.buses, data.students, child_id))
         entities.append(WheresTheBusGpsFixSensor(data.buses, data.students, child_id))
         entities.append(WheresTheBusSchoolArrivalSensor(data.students, child_id))
         entities.extend(
@@ -222,6 +229,62 @@ class WheresTheBusBusSensor(WheresTheBusEntity, SensorEntity):
             return None
         info = (self.coordinator.data or {}).get(self._child_id) or {}
         return self.entity_description.attrs_fn(info)
+
+
+class WheresTheBusJourneySensor(WheresTheBusEntity, SensorEntity):
+    """Which stage of the school run the rider is currently in.
+
+    One enum plus the numbers that go with it, so a notification automation
+    reads an answer instead of working one out. Ten branches used to each
+    decide this for themselves, and the gaps between them produced a bar that
+    filled for two hours after she reached school, a bar that lurched between
+    78% and 7%, a title and colour that flickered, and a countdown that ran
+    61 hours to the following Monday.
+    """
+
+    coordinator: WheresTheBusBusCoordinator
+    _attr_translation_key = "journey"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = JOURNEY_STAGES
+    _attr_icon = "mdi:bus-marker"
+
+    def __init__(
+        self,
+        coordinator: WheresTheBusBusCoordinator,
+        students: WheresTheBusStudentCoordinator,
+        child_id: int,
+    ) -> None:
+        """Initialise the sensor."""
+        super().__init__(coordinator, students, child_id, "journey")
+
+    @property
+    def _journey(self) -> Journey | None:
+        """Return the current stage, or None while the roster is unknown."""
+        student = self.student
+        if student is None:
+            return None
+        return self.coordinator.journey(self._child_id, student)
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the current stage."""
+        journey = self._journey
+        return journey.stage if journey else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the numbers belonging to the current stage."""
+        journey = self._journey
+        if journey is None:
+            return None
+        return {
+            ATTR_STAGE_PROGRESS: journey.progress,
+            ATTR_STAGE_TARGET: journey.target.isoformat() if journey.target else None,
+            ATTR_STAGE_BOARDED: (
+                journey.boarded.isoformat() if journey.boarded else None
+            ),
+            ATTR_JOURNEY_ID: journey.journey_id,
+        }
 
 
 class WheresTheBusGpsFixSensor(WheresTheBusEntity, SensorEntity):

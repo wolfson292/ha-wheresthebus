@@ -947,3 +947,37 @@ async def test_a_restart_mid_run_rebuilds_what_it_missed(
     key = (12345678, "pm", date(2026, 9, 11))
     assert buses._approach[key].arrived is True
     assert buses._pending[key][0] == pytest.approx(0.1)
+
+
+async def test_the_journey_sensor_reports_the_current_stage(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
+) -> None:
+    """One sensor answers "what is happening", so nothing else has to guess."""
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # Nothing doing in the middle of the day.
+    with freeze_time_local(2026, 9, 14, 13, 0):
+        mock_api.async_get_rider_info.return_value = {**RIDER_INFO, "dist": 5.0}
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    journey = hass.states.get("sensor.robin_alex_rivera_journey")
+    assert journey is not None
+    assert journey.state == "idle"
+    assert journey.attributes["options"] == [
+        "idle",
+        "to_stop",
+        "at_stop",
+        "to_school",
+        "at_school",
+        "from_school",
+        "to_home",
+        "home",
+    ]
+
+    # The numbers a notification needs travel with it, so nothing downstream
+    # has to work them out. Stage transitions themselves are covered directly
+    # in test_journey.py, at every instant of a school day.
+    for key in ("progress", "target", "boarded", "journey_id"):
+        assert key in journey.attributes

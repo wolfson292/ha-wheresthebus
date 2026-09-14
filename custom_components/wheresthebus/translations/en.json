@@ -87,6 +87,19 @@
       },
       "last_gps_fix": {
         "name": "Last GPS fix"
+      },
+      "journey": {
+        "name": "Journey",
+        "state": {
+          "idle": "Idle",
+          "to_stop": "Bus on the way to the stop",
+          "at_stop": "At the stop",
+          "to_school": "Riding to school",
+          "at_school": "Arrived at school",
+          "from_school": "Riding home",
+          "to_home": "Bus on the way home",
+          "home": "Home"
+        }
       }
     }
   }

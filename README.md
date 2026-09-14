@@ -17,6 +17,7 @@ One device per rider on your account, with these entities:
 | `sensor.<rider>_distance_to_stop` | Distance from the bus to the rider's stop. |
 | `sensor.<rider>_bus_status` | Freshness of the bus's GPS fix: `current`, `stale` or `inactive`. |
 | `sensor.<rider>_last_gps_fix` | When the bus was last heard from (diagnostic). |
+| `sensor.<rider>_journey` | Which stage of the run the rider is in right now. |
 | `sensor.<rider>_next_arrival` | When the bus is next expected at the rider's stop. |
 | `sensor.<rider>_school_arrival` | When the morning ride is expected to reach school. |
 | `sensor.<rider>_last_scan` | Timestamp of the most recent ID scan. |
@@ -49,6 +50,46 @@ minute, a newly computed instant has to differ from the standing one by more
 than 90 seconds to replace it — enough to absorb the rounding, small enough to
 move the moment a real fix lands. A bus that has gone inactive reports no fix
 at all rather than an increasingly stale one.
+
+### The journey stage
+
+`journey` answers one question — *what is happening right now* — as an enum
+with the numbers that belong to it:
+
+| Stage | Meaning | `progress` measures |
+| --- | --- | --- |
+| `idle` | No run under way | — |
+| `to_stop` | Bus approaching the home stop, morning | Distance closed from 3 miles |
+| `at_stop` | Bus at the stop — time to board | 100 |
+| `to_school` | Aboard, riding to school | Elapsed against the learned ride |
+| `at_school` | Dropped off, briefly | 100 |
+| `from_school` | Aboard, riding home | Elapsed against the predicted arrival |
+| `to_home` | Bus approaching home, afternoon | Distance closed from 3 miles |
+| `home` | Bus at the stop | 100 |
+
+Alongside it: `target` (the instant being counted towards), `boarded`, and
+`journey_id` — a date-plus-run identifier so a notification carrying it can
+never update yesterday's.
+
+This exists because the same question was previously answered independently
+in ten branches of a notification automation, each from whatever signals were
+nearest to hand. Four faults came out of the gaps between them: a progress bar
+that filled for two hours after she reached school, because that branch's only
+stop was a scan the school skips about two days in three; a bar that lurched
+between 78% and 7%, because two branches measured progress on different
+scales; a title and colour that flickered, because they were chosen in two
+places that disagreed; and a countdown that ran 61 hours to the following
+Monday, because one branch never checked that its target was still today.
+
+None of those were hard problems. They were the same problem, in a place where
+it could not be tested. The stage machine is a pure function — no coordinator,
+no clock of its own — so every transition is checked directly at whatever
+instant of a school day it happens at.
+
+Ordering is the part worth knowing: having arrived somewhere outranks being on
+the way there, and being aboard outranks the bus merely being nearby. Without
+that last rule an afternoon approach describes a rider already on the bus as
+though she were still waiting at the kerb for it.
 
 ### Predicted arrival
 

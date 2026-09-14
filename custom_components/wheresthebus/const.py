@@ -191,6 +191,41 @@ SCHOOL_WEEK: Final = 5
 # Monday, and a week covers any holiday the history has taught us about.
 DAYS_AHEAD: Final = 8
 
+# The stages of one school run, as one enum on a single sensor.
+#
+# Ten automation branches used to each work this out for themselves from
+# whatever signals were nearest to hand, and four separate faults came out of
+# the gaps between them. It is computed once now, in journey.py.
+STAGE_IDLE: Final = "idle"
+STAGE_TO_STOP: Final = "to_stop"
+STAGE_AT_STOP: Final = "at_stop"
+STAGE_TO_SCHOOL: Final = "to_school"
+STAGE_AT_SCHOOL: Final = "at_school"
+STAGE_FROM_SCHOOL: Final = "from_school"
+STAGE_TO_HOME: Final = "to_home"
+STAGE_HOME: Final = "home"
+JOURNEY_STAGES: Final = [
+    STAGE_IDLE,
+    STAGE_TO_STOP,
+    STAGE_AT_STOP,
+    STAGE_TO_SCHOOL,
+    STAGE_AT_SCHOOL,
+    STAGE_FROM_SCHOOL,
+    STAGE_TO_HOME,
+    STAGE_HOME,
+]
+
+# How long "arrived" is worth saying for before the day goes quiet again.
+ARRIVED_DWELL_MINUTES: Final = 3
+
+# Local hour dividing the morning run from the afternoon one.
+NOON_HOUR: Final = 12
+
+ATTR_STAGE_PROGRESS: Final = "progress"
+ATTR_STAGE_TARGET: Final = "target"
+ATTR_STAGE_BOARDED: Final = "boarded"
+ATTR_JOURNEY_ID: Final = "journey_id"
+
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 

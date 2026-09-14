@@ -52,6 +52,7 @@ from .const import (
     STORAGE_VERSION,
     TRACK_SAMPLE_LIMIT,
 )
+from .journey import Journey, approach_is_open, journey_stage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -935,6 +936,51 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     def _arrival_threshold(self) -> float:
         """Return how close counts as an arrival, in the account's units."""
         return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
+
+    def journey(self, child_id: int, student: Student) -> Journey:
+        """Return which stage of the run this rider is currently in.
+
+        Everything the answer needs already lives here — the scans, the live
+        distance, the learned windows, the predictions — so it is settled in
+        one place rather than re-derived by whatever happens to be asking.
+        """
+        local_now = dt_util.as_local(dt_util.utcnow())
+        prediction = self.predict_next_arrival(child_id)
+        school = predict_school_arrival(student, local_now)
+
+        open_now = False
+        for run, scheduled in (
+            (RUN_AM, student.am_scheduled),
+            (RUN_PM, student.pm_scheduled),
+        ):
+            window = approach_window(
+                scheduled, local_now, self._window_centre(child_id, run)
+            )
+            if approach_is_open(local_now, window):
+                open_now = True
+                break
+
+        info = (self.data or {}).get(child_id) or {}
+        try:
+            distance = float(info["dist"])
+        except (KeyError, TypeError, ValueError):
+            distance = None
+
+        pickup = student.last_scan_of(SCAN_PICKUP)
+        dropoff = student.last_scan_of(SCAN_DROPOFF)
+        return journey_stage(
+            now=local_now,
+            distance=distance,
+            arrival_threshold=self._arrival_threshold,
+            outer_rung=self._ladder[0],
+            next_arrival=prediction.arrival if prediction else None,
+            next_run=prediction.run if prediction else None,
+            prediction_source=prediction.source if prediction else None,
+            school_arrival=school.arrival if school else None,
+            last_pickup=pickup.timestamp if pickup else None,
+            last_dropoff=dropoff.timestamp if dropoff else None,
+            approach_open=open_now,
+        )
 
     def gps_fix_time(self, child_id: int) -> datetime | None:
         """Return when this bus was last heard from, or None if it is dark."""
