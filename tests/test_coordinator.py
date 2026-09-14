@@ -36,6 +36,7 @@ from custom_components.wheresthebus.coordinator import (
     parse_stop_time,
     predict_school_arrival,
     reconstruct_arrivals,
+    remaining_at,
     run_window,
 )
 
@@ -809,3 +810,38 @@ def test_a_bus_parked_inside_a_rung_is_not_treated_as_crossing_it() -> None:
     # that found it inside. Coarse sampling, honestly recorded.
     assert legs[2] == 0
     assert legs[3] == 0
+
+
+def test_remaining_at_answers_from_the_last_time_the_bus_was_that_far_out() -> None:
+    """A bus weaves while it works a route, so one radius recurs several times.
+
+    Only the last occurrence is the final approach. Taking the first would
+    measure from a pass through the same radius twenty minutes earlier.
+    """
+    # (seconds before arrival, distance), oldest first.
+    track = [(3600, 6.0), (2400, 2.0), (1800, 4.0), (600, 2.0), (120, 0.8), (0, 0.1)]
+
+    # 2.0 miles occurs at 2400s and again at 600s; the later one is the answer.
+    assert remaining_at(track, 2.0) == 600
+    assert remaining_at(track, 0.8) == 120
+    # Never as far out as 9 miles, so this journey says nothing about it.
+    assert remaining_at(track, 9.0) is None
+
+
+def test_progress_reads_earlier_when_the_route_runs_ahead() -> None:
+    """The point of the whole exercise.
+
+    A stop skipped because nobody was aboard puts the bus further along than
+    usual for the time of day. Position says so immediately; the clock median
+    never does, and the rung ladder only reconsiders at four fixed distances.
+    """
+    typical = [(3000, 5.0), (1800, 3.0), (900, 1.5), (0, 0.1)]
+
+    # Two miles out. Historically that was a quarter of an hour from home.
+    assert remaining_at(typical, 2.0) == 1800
+    # Having got to half a mile, the same journey had a quarter of that left.
+    assert remaining_at(typical, 0.5) == 900
+
+    # So a bus at half a mile is told fifteen minutes, not thirty — without
+    # anything having to know that a stop was skipped.
+    assert remaining_at(typical, 0.5) < remaining_at(typical, 2.0)

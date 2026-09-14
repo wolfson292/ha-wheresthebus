@@ -144,7 +144,7 @@ BACKFILL_DAYS: Final = 14
 # learned under a narrower scheme are not wrong so much as incomplete —
 # 1.7.0 shipped a four-rung ladder that would otherwise have sat with only
 # the one rung its predecessor recorded, and behaved exactly as before.
-ARRIVAL_SCHEMA: Final = 4
+ARRIVAL_SCHEMA: Final = 5
 
 # The shape of each approach is kept alongside its timings: a list of
 # (seconds before arrival, distance) samples.  The ladder only records four
@@ -226,6 +226,16 @@ ATTR_STAGE_TARGET: Final = "target"
 ATTR_STAGE_BOARDED: Final = "boarded"
 ATTR_JOURNEY_ID: Final = "journey_id"
 
+# How the estimate was arrived at, loosest to tightest.
+#
+# BASIS_PROGRESS is the one that answers "where is it along the route". Every
+# past journey's track records how far out the bus was at each moment, so
+# today's distance can be looked up against them: the last time the bus was
+# this far out, how long did it still have? That responds continuously to a
+# run going quickly - a stop skipped because nobody was aboard - where the
+# rung ladder only re-anchors at four fixed distances and the clock median
+# does not respond at all.
+BASIS_PROGRESS: Final = "progress"
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 
@@ -243,5 +253,9 @@ ATTR_SCHEDULED: Final = "scheduled"
 ATTR_ANCHOR_DISTANCE: Final = "anchored_at"
 ATTR_ANCHOR_SAMPLES: Final = "anchor_samples"
 ATTR_WINDOW_CENTRE: Final = "window_centre"
+# How many past journeys were far enough out to say anything about this
+# distance. Two is enough to take a median of; one is an anecdote.
+ATTR_PROGRESS_SAMPLES: Final = "progress_samples"
+MIN_PROGRESS_SAMPLES: Final = 2
 SOURCE_LEARNED: Final = "learned"
 SOURCE_SCHEDULED: Final = "scheduled"

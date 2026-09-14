@@ -98,7 +98,30 @@ would rewrite itself on every poll, and Home Assistant renders a timestamp as
 relative time anyway. It also means alerting automations are plain `time`
 triggers with a negative offset — no templates.
 
-As the bus closes in, the estimate **re-anchors to the live approach**. Each
+The estimate is answered from **where the bus has got to along the route**,
+whenever there is enough history to say. Every past journey's track records how
+far out the bus was at each moment before it arrived, so today's distance can
+be looked up against them: *the last time the bus was this far out, how long
+did it still have?* The median of those answers is what is left now.
+
+That is the only one of the three methods that reconsiders on every position
+report. A stop skipped because nobody was aboard puts the bus further along
+than usual for the time of day, and the estimate moves earlier immediately —
+where the rung ladder only reconsiders at four fixed distances, and the clock
+median does not respond at all. `prediction_basis` reads `progress`, and
+`progress_samples` says how many past journeys were far enough out to speak to
+today's distance.
+
+One subtlety: a bus weaves while it works a route, so the same distance recurs
+several times in a journey. Only the **last** occurrence counts — the first
+would measure from a pass through the same radius twenty minutes earlier.
+
+The whole ride is recorded, not just the approach: tracking starts when a scan
+says the rider is aboard. The ride home begins twenty to thirty minutes before
+the approach window would open, and that stretch is exactly where running ahead
+first shows up.
+
+Failing that, as the bus closes in the estimate **re-anchors to the live approach**. Each
 arrival records how long the rest of the journey took from 3, 2, 1 and 0.5
 miles out, and the estimate uses the tightest of those the bus has already
 crossed today — the moment it crossed, plus the typical remaining time. So it

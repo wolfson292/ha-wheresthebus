@@ -552,8 +552,12 @@ async def test_prediction_re_anchors_to_the_live_approach(
         prediction = buses.predict_next_arrival(12345678)
 
     assert prediction is not None
-    assert prediction.basis == "approach"
-    # 07:52 crossing + the five minute median leg, not the 08:01 clock median.
+    # Answered from where the bus has got to along the route, which outranks
+    # the rung ladder because it reconsiders on every position report.
+    assert prediction.basis == "progress"
+    assert prediction.progress_samples == 2
+    # Five minutes left from a mile out, as on both previous mornings — not
+    # the 08:01 clock median.
     assert dt_util.as_local(prediction.arrival).strftime("%H:%M") == "07:57"
 
 
