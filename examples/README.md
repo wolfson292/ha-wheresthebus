@@ -58,7 +58,26 @@ trustworthy. They never both fire for the same run.
 "Arriving now" is position-based and always active — it cannot be wrong about
 where the bus is, even when the prediction is.
 
-## Requirements
+### If the Live Activity never appears
+
+iOS caps how often a **new** Live Activity may be launched by push. Once that
+budget is exhausted, starts fail **silently**: the automation succeeds, Home
+Assistant logs nothing, and the phone shows nothing. Because a failed start
+means the next push is also a start rather than an update, a run of failures
+never recovers on its own.
+
+An automation that pushes too often is therefore not merely noisy — it is
+self-defeating. This is why the ride branches are gated on `am_ride` /
+`pm_ride` and tick every five minutes rather than on every poll.
+
+To recover: **stop pushing** (disable the automation), leave it alone so the
+budget replenishes, then check in the companion app under
+**Settings → Live Activities** that they are Enabled, that nothing stale is
+listed under Active Activities, and that it says Synced. **Samples** on that
+screen starts one locally, which does not use the push budget — if a sample
+appears but a pushed one does not, the budget is the problem, not the device.
+
+### Requirements
 
 - The Live Activity automation needs **Home Assistant 2026.7+** and iOS 17.2+.
   The phone must complete a token handshake first: if nothing appears, open the

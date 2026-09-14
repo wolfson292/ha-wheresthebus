@@ -298,6 +298,20 @@
     # one that has finished and left the sensor pointing at the next run.
     am_ride: "{% set praw = states(p) %}{% set saraw = states(sa) %}{% set draw = states(d) %}{{ praw not in ['unknown','unavailable'] and saraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour < 12 and (saraw | as_datetime | as_local).date() == now().date() and as_timestamp(now()) < (saraw | as_timestamp) + 600 and (draw in ['unknown','unavailable'] or (draw | as_timestamp) < (praw | as_timestamp)) }}"
     pm_ride: "{% set praw = states(p) %}{% set sraw = states(s) %}{{ praw not in ['unknown','unavailable'] and sraw not in ['unknown','unavailable'] and (praw | as_datetime | as_local).date() == now().date() and (praw | as_datetime | as_local).hour >= 12 and (sraw | as_datetime | as_local).date() == now().date() }}"
+    # A tag per journey, not one fixed string for all time.
+    #
+    # iOS caps how often a NEW Live Activity may be launched by push. Go over
+    # it and starts fail SILENTLY — the automation succeeds, Home Assistant
+    # logs nothing, the phone shows nothing. And because a failed start means
+    # the next push is also a start, a run of failures never recovers on its
+    # own. A runaway that pushed every five minutes for hours after a journey
+    # had ended drained the budget here and kept it drained for two weeks.
+    #
+    # The am/pm half comes from the clock, NOT from next_arrival's run
+    # attribute: that flips to pm the instant the morning pickup passes, which
+    # would change the tag mid-journey and start a second activity rather than
+    # updating the first.
+    tag: "wtb-{{ now().strftime('%Y%m%d') }}-{{ 'am' if now().hour < 12 else 'pm' }}"
   triggers:
     - trigger: time
       at:
@@ -365,7 +379,7 @@
                 title: On board — riding to school
                 message: "Picked up at {{ (states(p) | as_datetime | as_local).strftime('%-I:%M %p') }}{% if states(sa) not in ['unknown','unavailable'] %} · school around {{ (states(sa) | as_datetime | as_local).strftime('%-I:%M %p') }}{% endif %}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: true
                   when: "{{ (states(sa) if states(sa) not in ['unknown','unavailable'] else states(p)) | as_timestamp | int }}"
@@ -401,7 +415,7 @@
                 title: On board — riding to school
                 message: "{% set left = ((states(sa) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ 'Arriving at school any moment' if left <= 0 else left ~ ' min to school' }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   # A chronometer left running past its target counts UPWARD,
                   # turning a late bus into a growing "1:40:51" that reads as
@@ -434,7 +448,7 @@
                 title: On board — riding home
                 message: "Left school at {{ (states(p) | as_datetime | as_local).strftime('%-I:%M %p') }} · home around {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: true
                   when: "{{ states(s) | as_timestamp | int }}"
@@ -471,7 +485,7 @@
                 title: On board — riding home
                 message: "{% set left = ((states(s) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ states(dist) }} miles from home · {{ 'arriving any moment' if left <= 0 else left ~ ' min' }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: "{{ (states(s) | as_timestamp) > as_timestamp(now()) }}"
                   when: "{{ states(s) | as_timestamp | int }}"
@@ -501,7 +515,7 @@
                 title: Arrived at school
                 message: "Dropped off at {{ (states(d) | as_datetime | as_local).strftime('%-I:%M %p') }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: false
                   progress: 100
@@ -516,7 +530,7 @@
               data:
                 message: clear_notification
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
 
         - alias: Home — afternoon journey done
           conditions:
@@ -531,7 +545,7 @@
                 title: Home
                 message: The bus is at the stop now
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: false
                   progress: 100
@@ -546,7 +560,7 @@
               data:
                 message: clear_notification
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
 
         - alias: At the stop — board now
           conditions:
@@ -565,7 +579,7 @@
                 title: At the stop now
                 message: The bus has arrived — time to board
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: false
                   progress: 100
@@ -613,7 +627,7 @@
                 title: Bus on the way to the stop
                 message: "{{ states(dist) }} miles away · due {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: true
                   when: "{{ states(s) | as_timestamp | int }}"
@@ -662,7 +676,7 @@
                 title: "{{ 'On board — riding home' if pm_ride else 'Bus on the way home' }}"
                 message: "{{ states(dist) }} miles away · {% set left = ((states(s) | as_timestamp - as_timestamp(now())) / 60) | round | int %}{{ 'arriving any moment' if left <= 0 else left ~ ' min' }} · due {{ (states(s) | as_datetime | as_local).strftime('%-I:%M %p') }}"
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
                   live_update: true
                   chronometer: true
                   when: "{{ states(s) | as_timestamp | int }}"
@@ -685,7 +699,7 @@
               data:
                 message: clear_notification
                 data:
-                  tag: school-bus-live
+                  tag: "{{ tag }}"
 
 # ---------------------------------------------------------------------------
 # 6. Live Activities break silently after a companion app update
