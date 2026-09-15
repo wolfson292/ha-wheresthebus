@@ -261,3 +261,45 @@ def test_a_morning_drop_off_scan_still_means_school() -> None:
     )
 
     assert journey.stage == "at_school"
+
+
+def test_arriving_in_the_morning_is_not_home_because_the_afternoon_is_next() -> None:
+    """The moment the bus arrives, the prediction rolls to the afternoon.
+
+    Reading the stage off which run is predicted NEXT then flips the card to
+    "Home" while the rider is standing at the kerb waiting to be let on for
+    school. What run this is comes from the clock; next_run says only what is
+    being counted towards.
+    """
+    journey = _stage(
+        now=_at(8, 1),
+        distance=0.1,
+        approach_open=True,
+        next_arrival=_at(17, 21),
+        next_run="pm",
+        prediction_source="learned",
+    )
+
+    assert journey.stage == "at_stop"
+    assert journey.progress == 100
+
+
+def test_arriving_home_is_not_a_walk_to_the_stop_because_tomorrow_is_next() -> None:
+    """The afternoon mirror, and the one that actually happens.
+
+    When the bus reaches the stop at the end of the ride home, the prediction
+    rolls to tomorrow morning. Reading the stage off it then announces "At the
+    stop now — time to board" as the rider steps off the bus outside the
+    house, at half past five in the evening.
+    """
+    journey = _stage(
+        now=_at(17, 26),
+        distance=0.1,
+        approach_open=True,
+        next_arrival=_at(8, 1, day=15),
+        next_run="am",
+        prediction_source="learned",
+    )
+
+    assert journey.stage == "home"
+    assert journey.progress == 100

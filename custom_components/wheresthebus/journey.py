@@ -143,7 +143,12 @@ def journey_stage(
     # 2. The bus is at the stop. In the afternoon that is the end of the ride
     #    home; in the morning it is the moment to walk out of the door.
     if at_stop and approach_open and next_run is not None:
-        arrived_stage = STAGE_HOME if next_run == RUN_PM else STAGE_AT_STOP
+        # Which run this IS comes from the clock, not from which run is
+        # predicted next. Those differ the moment the bus arrives: the
+        # prediction rolls straight on to the afternoon, and reading the stage
+        # off it announced "Home" while the rider was still standing at the
+        # kerb waiting to be let on for school.
+        arrived_stage = STAGE_HOME if _run_of(now) == RUN_PM else STAGE_AT_STOP
         return Journey(stage=arrived_stage, progress=100, journey_id=_journey_id(now))
 
     # 3. Aboard. The bar fills against elapsed time, because distance to the
@@ -179,7 +184,9 @@ def journey_stage(
         and next_run is not None
     ):
         return Journey(
-            stage=STAGE_TO_HOME if next_run == RUN_PM else STAGE_TO_STOP,
+            # The clock again, for the same reason: next_run says what is
+            # being predicted, and this wants to know what is happening.
+            stage=STAGE_TO_HOME if _run_of(now) == RUN_PM else STAGE_TO_STOP,
             progress=_closing(distance, outer_rung),
             target=dt_util.as_local(next_arrival),
             journey_id=_journey_id(now),

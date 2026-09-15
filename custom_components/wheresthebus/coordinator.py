@@ -1620,6 +1620,28 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
     # Prediction
     # ------------------------------------------------------------------
 
+    def _already_arrived(self, child_id: int, run: str, day: date) -> bool:
+        """Whether the bus has already reached this stop for that run that day.
+
+        An arrival is not written to history the moment it happens: it is
+        promoted when its window closes, half an hour or so after the bus has
+        been and gone. So the pending record has to be read too, or every
+        prediction between the bus arriving and the window shutting still
+        counts today's run as yet to come.
+
+        That gap is what left the morning estimate re-widening from one minute
+        to fourteen at 07:58 on 15 Sep, a minute after the bus pulled up —
+        `moment > local_now` was still true of an 08:01 learned time, so the
+        run that had just finished was offered as the next one.
+        """
+        pending = self._pending.get((child_id, run, day))
+        if pending is not None and pending[0] <= self._arrival_threshold:
+            return True
+        return any(
+            item.run == run and dt_util.as_local(item.arrival).date() == day
+            for item in self._arrivals.get(child_id, [])
+        )
+
     def predict_next_arrival(self, child_id: int) -> ArrivalPrediction | None:
         """Predict when the bus next reaches this rider's stop."""
         student = (self.students.data or {}).get(child_id)
@@ -1694,7 +1716,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     second=0,
                     microsecond=0,
                 )
-                if moment > local_now and moment.weekday() in service:
+                if (
+                    moment > local_now
+                    and moment.weekday() in service
+                    and not self._already_arrived(child_id, run, moment.date())
+                ):
                     span = self._bounds.get((child_id, run))
                     candidates.append(
                         ArrivalPrediction(

@@ -1198,3 +1198,71 @@ async def test_an_arrival_the_recorder_cannot_reach_is_not_replayed_for_ever(
         await hass.async_block_till_done()
 
     assert not replayed.called
+
+
+async def test_a_run_that_has_already_arrived_is_not_offered_as_the_next_one(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The estimate re-widening after the bus had gone, seen on 15 Sep.
+
+    The bus reached the stop at 07:57. At 07:58 the morning window snapped
+    from one minute wide back to fourteen and went on counting towards 08:01 —
+    a prediction for an arrival that had already happened, growing vaguer the
+    further past it the clock got.
+
+    It needs a LEARNED time later than the timetable to appear at all, which
+    is why it went unnoticed: the published 07:56 is already behind you at
+    07:58, so the run rolls to tomorrow on its own. The learned 08:01 is not,
+    and the historical branch asked only whether that was still in the future.
+
+    What it could not see is that the run was over. An arrival is not written
+    to history until its window closes, half an hour later, so nothing in the
+    record contradicted it. Reading the pending arrival closes that gap.
+    """
+    mock_config_entry.add_to_hass(hass)
+    # Five mornings that all arrived at 08:01, five minutes after the
+    # timetable, which is what makes the learned time outlive the bus.
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    {
+                        "run": "am",
+                        "at": datetime(
+                            2026, 9, day, 8, 1, tzinfo=dt_util.get_default_time_zone()
+                        ).isoformat(),
+                        "closest": 0.0,
+                        "legs": {"0": 600, "1": 360, "2": 240, "3": 60},
+                        "track": [],
+                        "replayed": True,
+                    }
+                    for day in (8, 9, 10, 11, 14)
+                ]
+            },
+        },
+    }
+
+    with freeze_time_local(2026, 9, 15, 7, 56):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+
+        # The bus pulls up at the stop.
+        mock_api.async_get_rider_info.return_value = _at_distance(0.1)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    assert buses._pending[(12345678, "am", date(2026, 9, 15))][0] == pytest.approx(0.1)
+
+    # A minute later the morning is over, whatever the learned time still says.
+    with freeze_time_local(2026, 9, 15, 7, 58):
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.run == "pm"
+    assert dt_util.as_local(prediction.arrival).date() == date(2026, 9, 15)
