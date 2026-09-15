@@ -162,6 +162,16 @@ equally, and the tie-break stops discriminating exactly when it matters. A
 heading is true whatever the clock says. Elapsed time is still there, demoted
 to separating same-direction passes.
 
+A position only answers when it actually pins the journey down. Where the
+matching samples from a past run disagree by more than five minutes about how
+long was left, the place is treated as having no answer — a bus parked at the
+depot matches the whole of yesterday's wait there, and the two ends of that
+wait are half an hour apart. Measured on one morning, the moving samples
+spanned 0.0 to 2.5 minutes and the parked ones 34.5, so there is no borderline
+to argue over. Refusing hands the question back to the historical estimate,
+which is vague but honest; answering produced a confident number 31 minutes
+wrong for the first half of the window.
+
 A bus standing still has no heading of its own, so its direction is read from
 the last fix that genuinely moved — it reached that spot going somewhere. A
 sample with nothing behind it at all is never filtered out: refusing every

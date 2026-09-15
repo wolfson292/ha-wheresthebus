@@ -213,3 +213,67 @@ def test_a_bus_with_no_heading_yet_matches_as_it_always_did() -> None:
     assert (
         nearest_remaining(UTURN, 40.7300, -74.0260, None, RADIUS, heading=None) == 810
     )
+
+
+# A past journey that waited a long time in one place before setting off, then
+# paused briefly on the way. Invented, like everything else here.
+DEPOT: list[tuple[int, float, float]] = [
+    (2400, 40.7400, -74.0300),
+    (2100, 40.7400, -74.0300),
+    (1800, 40.7400, -74.0300),
+    (1500, 40.7400, -74.0300),
+    (1200, 40.7400, -74.0300),
+    (900, 40.7400, -74.0300),
+    (600, 40.7400, -74.0300),
+    (300, 40.7300, -74.0200),
+    (270, 40.7300, -74.0200),
+    (240, 40.7300, -74.0200),
+    (150, 40.7250, -74.0150),
+    (0, 40.7155, -74.0020),
+]
+
+
+def test_a_place_the_bus_waited_half_an_hour_has_no_answer() -> None:
+    """Measured on 15 Sep, and the reason this guard exists.
+
+    The bus sat at the depot from 07:14 to 07:49 with its position frozen,
+    then drove the whole route in eight minutes. Matched against the day
+    before, that parked position hit seventy samples spanning thirty-five
+    minutes — and the estimate confidently reported forty-five minutes to go
+    when the true answer was fourteen. Thirty-one minutes wrong, stated
+    without hedging, for the entire first half of the window.
+
+    The position is real. What it is not is informative: a bus that has not
+    left yet has made no progress to measure, and where it is parked says
+    nothing about when it will go. Returning None hands the question back to
+    the historical estimate, which is vague but honest.
+    """
+    assert nearest_remaining(DEPOT, 40.7400, -74.0300, 120, RADIUS) is None
+    # Not merely the elapsed time saving it — no elapsed, same refusal.
+    assert nearest_remaining(DEPOT, 40.7400, -74.0300, None, RADIUS) is None
+
+
+def test_a_brief_stop_on_the_route_still_answers() -> None:
+    """The guard must not throw away ordinary stops.
+
+    A bus pausing to work a stop is the normal case, and it is still a place
+    with a usable answer. On the same 15 Sep replay the moving samples spanned
+    0.0 to 2.5 minutes against 34.5 for the depot, so there is a wide gap to
+    put the threshold in rather than a line to split hairs over.
+    """
+    assert nearest_remaining(DEPOT, 40.7300, -74.0200, None, RADIUS) == 240
+    assert nearest_remaining(DEPOT, 40.7250, -74.0150, None, RADIUS) == 150
+
+
+def test_refusing_to_answer_is_not_the_same_as_finding_nothing() -> None:
+    """Both return None, and the caller treats them the same, deliberately.
+
+    Off-route and can't-tell are different states, but the useful response to
+    each is identical: say nothing and let a vaguer estimate stand. Collapsing
+    them keeps one fallback path rather than two.
+    """
+    off_route = nearest_remaining(DEPOT, 40.9, -74.5, None, RADIUS)
+    cannot_tell = nearest_remaining(DEPOT, 40.7400, -74.0300, None, RADIUS)
+
+    assert off_route is None
+    assert cannot_tell is None

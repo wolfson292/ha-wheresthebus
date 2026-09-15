@@ -42,6 +42,18 @@ _HEADING_MIN_MILES = 0.02
 # U-turn are near enough 180 apart.
 _HEADING_TOLERANCE_DEGREES = 90.0
 
+# How far apart the answers from one place may be before that place is
+# admitted to not have an answer. A bus parked at the depot matches the whole
+# of a past journey's parked block, and the two ends of that block are half an
+# hour apart: the position is real, and it says nothing about progress.
+#
+# Measured on the 15 Sep morning run against 14 Sep. While the bus was moving,
+# the matching samples spanned 0.0 to 2.5 minutes. While it was parked, 34.5
+# to 35.5. There is no borderline case in between — position either pins the
+# journey down or misses by an order of magnitude — so five minutes sits clear
+# of a genuine wait at a stop and nowhere near the depot.
+_AMBIGUOUS_SPREAD_SECONDS = 300
+
 # A half turn, and the fewest fixes a direction can be drawn from.
 _STRAIGHT_ANGLE = 180
 _PAIR = 2
@@ -168,6 +180,16 @@ def nearest_remaining(
 
     if not matches:
         return None
+
+    # If this place meant wildly different things at different times of a past
+    # journey, it does not locate today's. Answering anyway is worse than not
+    # answering: the caller has a historical estimate to fall back on that is
+    # honestly vague, and replacing it with a confident wrong number is how a
+    # parked bus came out 31 minutes adrift on 15 Sep.
+    ages = [age for _, _, age in matches]
+    if max(ages) - min(ages) > _AMBIGUOUS_SPREAD_SECONDS:
+        return None
+
     # Elapsed agreement first, distance second. Both candidates are already
     # within the radius and going the same way, so the nearer one is not
     # necessarily the right one.
