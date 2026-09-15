@@ -24,11 +24,27 @@ reached the stop.
 
 from __future__ import annotations
 
-from math import asin, cos, radians, sin, sqrt
+from collections.abc import Sequence
+from math import asin, atan2, cos, degrees, radians, sin, sqrt
 
 # Mean radius of the earth. Journeys here are a few miles, where treating the
 # earth as a sphere is wrong by centimetres.
 _EARTH_RADIUS_MILES = 3958.7613
+
+# How far apart two fixes must be before the line between them is taken as a
+# heading. A bus idling at a stop still jitters by a few metres, and the
+# bearing of that jitter is noise pointing in a random direction.
+_HEADING_MIN_MILES = 0.02
+
+# How far two headings may differ and still count as the same way along the
+# road. Ninety degrees splits "onward" from "back the way it came" while
+# leaving room for a bend taken between fixes; the passes either side of a
+# U-turn are near enough 180 apart.
+_HEADING_TOLERANCE_DEGREES = 90.0
+
+# A half turn, and the fewest fixes a direction can be drawn from.
+_STRAIGHT_ANGLE = 180
+_PAIR = 2
 
 
 def haversine_miles(
@@ -43,12 +59,55 @@ def haversine_miles(
     return 2 * _EARTH_RADIUS_MILES * asin(sqrt(inner))
 
 
+def bearing_degrees(
+    from_lat: float, from_lon: float, to_lat: float, to_lon: float
+) -> float:
+    """Return the initial compass bearing from one point to another."""
+    lat1, lat2 = radians(from_lat), radians(to_lat)
+    delta_lon = radians(to_lon - from_lon)
+    y = sin(delta_lon) * cos(lat2)
+    x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(delta_lon)
+    return degrees(atan2(y, x)) % 360
+
+
+def _turn_between(first: float, second: float) -> float:
+    """Return the smaller angle between two bearings, 0 to 180."""
+    difference = abs(first - second) % 360
+    return difference if difference <= _STRAIGHT_ANGLE else 360 - difference
+
+
+def heading_of(points: Sequence[tuple[float, float]]) -> float | None:
+    """Return which way something at the end of ``points`` is travelling.
+
+    ``points`` is (latitude, longitude), oldest first. The bearing is taken
+    from the most recent earlier fix far enough away to mean something, so a
+    bus that has been sitting still reports None rather than the direction of
+    its GPS jitter.
+    """
+    if len(points) < _PAIR:
+        return None
+    lat, lon = points[-1]
+    for previous_lat, previous_lon in reversed(points[:-1]):
+        if haversine_miles(previous_lat, previous_lon, lat, lon) >= _HEADING_MIN_MILES:
+            return bearing_degrees(previous_lat, previous_lon, lat, lon)
+    return None
+
+
+def _sample_heading(
+    track: list[tuple[int, float, float]], index: int
+) -> float | None:
+    """Return which way a past journey was travelling at one of its samples."""
+    return heading_of([(lat, lon) for _, lat, lon in track[: index + 1]])
+
+
 def nearest_remaining(
     track: list[tuple[int, float, float]],
     lat: float,
     lon: float,
     elapsed: int | None,
     radius: float,
+    *,
+    heading: float | None = None,
 ) -> int | None:
     """Return how long was left, when a past journey was where the bus is now.
 
@@ -62,10 +121,25 @@ def nearest_remaining(
     bus on another route, or a stretch that journey did not record.
 
     A route crosses itself: the same junction can be passed on the way out and
-    again on the way back. Where several past samples are equally close, the
-    one whose own elapsed time best matches today's wins, which is what tells
-    the outbound pass from the homeward one. Falling back on the latest such
-    sample would always claim the homeward pass, and so always under-estimate.
+    again on the way back, and the two passes want different answers.
+
+    ``heading`` is which way the bus is travelling now, in degrees, and it is
+    the strongest thing available for telling those passes apart. At a U-turn
+    the two passes are metres apart and roughly 180 degrees opposed, so a
+    sample heading the other way is not where the bus is, however close it
+    sits. Past samples pointing the wrong way are dropped outright.
+
+    Direction beats elapsed time at this because it does not depend on the
+    schedule. ``elapsed`` compares today's running time against a past
+    journey's, so it assumes today is going roughly like that journey did —
+    which is exactly the assumption the estimate exists to test. A bus ten
+    minutes down drifts against every past sample equally, and the tie-break
+    stops discriminating at the moment it matters most. Which way the bus is
+    pointing is true whatever the clock says.
+
+    So elapsed time stays, demoted to separating same-direction passes, and
+    for a journey with no direction yet — the bus stationary, or only one fix
+    so far — it is still the only thing there is.
     """
     if not track:
         return None
@@ -76,19 +150,28 @@ def nearest_remaining(
 
     # (disagreement in elapsed time, distance away, seconds left)
     matches: list[tuple[float, float, int]] = []
-    for age, sample_lat, sample_lon in track:
+    for index, (age, sample_lat, sample_lon) in enumerate(track):
         gap = haversine_miles(lat, lon, sample_lat, sample_lon)
         if gap > radius:
             continue
+        if heading is not None:
+            was = _sample_heading(track, index)
+            # A sample with no heading of its own is a bus that was standing
+            # still there, which is a real place on the route and keeps its
+            # claim. Only a sample known to be going the other way is refused.
+            if was is not None and _turn_between(heading, was) > (
+                _HEADING_TOLERANCE_DEGREES
+            ):
+                continue
         drift = 0.0 if elapsed is None else abs((span - age) - elapsed)
         matches.append((drift, gap, age))
 
     if not matches:
         return None
     # Elapsed agreement first, distance second. Both candidates are already
-    # within the radius, so the nearer one is not necessarily the right one —
-    # the outbound and homeward passes through a junction are metres apart.
+    # within the radius and going the same way, so the nearer one is not
+    # necessarily the right one.
     return min(matches)[2]
 
 
-__all__ = ["haversine_miles", "nearest_remaining"]
+__all__ = ["bearing_degrees", "haversine_miles", "heading_of", "nearest_remaining"]

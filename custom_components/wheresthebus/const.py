@@ -144,7 +144,7 @@ BACKFILL_DAYS: Final = 14
 # learned under a narrower scheme are not wrong so much as incomplete —
 # 1.7.0 shipped a four-rung ladder that would otherwise have sat with only
 # the one rung its predecessor recorded, and behaved exactly as before.
-ARRIVAL_SCHEMA: Final = 6
+ARRIVAL_SCHEMA: Final = 7
 
 # The shape of each approach is kept alongside its timings: a list of
 # (seconds before arrival, distance) samples.  The ladder only records four

@@ -1089,3 +1089,112 @@ async def test_the_replay_reruns_when_the_store_holds_no_route(
     # Legs and a current schema are not enough: with no positions stored, the
     # replay has to run rather than assume its work was already done.
     assert replayed.called
+
+
+async def test_one_live_track_does_not_stand_in_for_history_never_read(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The third door into the same trap, found on 15 Sep.
+
+    3.0.3 replaced a schema check with "does any arrival hold a track", which
+    is the right question asked of the wrong scope. The live path records a
+    track for every journey it watches, so the first real journey after the
+    upgrade satisfied `any` on its own and the guard declared the history
+    complete. Nineteen older arrivals had never been read and now never would
+    be; with one morning track stored and MIN_ROUTE_SAMPLES at two, the route
+    matcher could not reach its minimum and silently fell back to the ladder.
+
+    The question has to be asked of each arrival: has the recorder been asked
+    for THIS one.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    # Older arrivals the recorder was never asked about.
+                    {
+                        "run": "am",
+                        "at": "2026-09-08T12:02:00+00:00",
+                        "closest": 0.0,
+                        "legs": {"0": 600, "1": 360, "2": 240, "3": 60},
+                        "track": [],
+                    },
+                    {
+                        "run": "am",
+                        "at": "2026-09-09T12:01:00+00:00",
+                        "closest": 0.0,
+                        "legs": {"0": 540, "1": 359, "2": 240, "3": 120},
+                        "track": [],
+                    },
+                    # One journey the live path watched, which is what made
+                    # `any(track)` true and stranded the other two.
+                    {
+                        "run": "am",
+                        "at": "2026-09-14T12:01:48+00:00",
+                        "closest": 0.0,
+                        "legs": {"1": 449, "2": 329, "3": 150},
+                        "track": [[449, 40.7300, -74.0230], [150, 40.7155, -74.0020]],
+                    },
+                ]
+            },
+        },
+    }
+
+    replayed = AsyncMock(return_value=[])
+    with patch(
+        "custom_components.wheresthebus.coordinator.async_position_history", replayed
+    ):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert replayed.called
+
+
+async def test_an_arrival_the_recorder_cannot_reach_is_not_replayed_for_ever(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The other half of the guard, and the reason it is a flag not a scan.
+
+    An arrival older than the recorder keeps can never gain a track however
+    often it is replayed. Asking only "is the track empty" would retry those
+    on every start for the rest of the integration's life. Recording that the
+    attempt was made is what separates "not read yet" from "read, nothing
+    there" — and only the first is work.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    {
+                        "run": "am",
+                        "at": "2026-08-27T12:04:46+00:00",
+                        "closest": 0.0,
+                        "legs": {"0": 1739, "1": 419, "2": 299, "3": 119},
+                        "track": [],
+                        "replayed": True,
+                    }
+                ]
+            },
+        },
+    }
+
+    replayed = AsyncMock(return_value=[])
+    with patch(
+        "custom_components.wheresthebus.coordinator.async_position_history", replayed
+    ):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert not replayed.called

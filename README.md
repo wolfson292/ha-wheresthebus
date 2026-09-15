@@ -148,9 +148,24 @@ bus that is genuinely running ahead — a stop skipped because nobody was aboard
 — matches a point that came late in previous journeys, so the estimate moves
 earlier immediately.
 
-A route crosses itself, so the same junction is driven twice. Where several
-past positions are equally close, the one whose own elapsed time best matches
-today's wins, which is what separates the outbound pass from the homeward one.
+A route crosses itself, so the same junction is driven twice — and the two
+passes want different answers. What separates them is **which way the bus is
+pointing**. At a U-turn the outbound and homeward samples sit metres apart and
+about 180 degrees opposed, so a past position heading the other way is dropped
+however close it is.
+
+Direction is used rather than timing because it owes nothing to the schedule.
+Comparing how long today's journey has been running against a past one assumes
+today is going roughly like that one did, which is the very thing the estimate
+exists to test: a bus ten minutes down drifts against every past sample
+equally, and the tie-break stops discriminating exactly when it matters. A
+heading is true whatever the clock says. Elapsed time is still there, demoted
+to separating same-direction passes.
+
+A bus standing still has no heading of its own, so its direction is read from
+the last fix that genuinely moved — it reached that spot going somewhere. A
+sample with nothing behind it at all is never filtered out: refusing every
+position whose direction is unknown would discard the start of every journey.
 
 `prediction_basis` reads `route`, and `route_samples` says how many past
 journeys came near this spot. When none did — a detour, or a substitute on

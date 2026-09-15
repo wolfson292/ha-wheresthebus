@@ -59,7 +59,7 @@ from .const import (
     TRACK_SAMPLE_LIMIT,
 )
 from .journey import Journey, approach_is_open, journey_stage
-from .route import haversine_miles, nearest_remaining
+from .route import haversine_miles, heading_of, nearest_remaining
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -156,6 +156,12 @@ class RunArrival:
     # answered from the record rather than reconstructed from two sensors and
     # three recorder queries every time somebody wonders.
     boarded: datetime | None = None
+    # Whether the recorder has been asked for this arrival's positions. Set by
+    # the backfill on every record it considered, including the ones it found
+    # nothing for, so "has the history been read" is answered per arrival
+    # rather than by one claim covering the whole store. See
+    # async_backfill_arrivals for why that distinction is load-bearing.
+    replayed: bool = False
 
 
 def _run_centre(
@@ -782,6 +788,12 @@ def _merge_arrivals(
     replayed one with the same four rungs and the whole route — so the
     positions the route match needs were discarded the moment they arrived,
     and would have been on every restart thereafter.
+
+    Whether the recorder has been read for an arrival is a property of the
+    arrival, not of whichever record won, so it survives the merge from either
+    side. Letting the loser take it away would leave the backfill guard seeing
+    unread history that had in fact been read, and replaying it on every start
+    for ever.
     """
 
     def knows(item: RunArrival) -> tuple[int, int]:
@@ -791,8 +803,12 @@ def _merge_arrivals(
     for item in [*existing, *fresh]:
         key = (item.run, dt_util.as_local(item.arrival).date())
         current = by_run_day.get(key)
-        if current is None or knows(item) > knows(current):
+        if current is None:
             by_run_day[key] = item
+            continue
+        winner = item if knows(item) > knows(current) else current
+        winner.replayed = item.replayed or current.replayed
+        by_run_day[key] = winner
     return sorted(by_run_day.values(), key=lambda item: item.arrival)
 
 
@@ -1388,6 +1404,10 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             # first — the raw material for fitting a better
                             # estimator than the median-of-legs one.
                             "track": [list(point) for point in item.track],
+                            # An empty track with this set means the recorder
+                            # was asked and had nothing left; unset means it
+                            # has not been asked yet.
+                            "replayed": item.replayed,
                         }
                         for item in arrivals
                     ],
@@ -1462,12 +1482,8 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         this check that cannot strand itself.
         """
         stored = [item for arrivals in self._arrivals.values() for item in arrivals]
-        complete = (
-            self._schema >= ARRIVAL_SCHEMA
-            and any(item.legs for item in stored)
-            and any(item.track for item in stored)
-        )
-        if complete:
+        outstanding = [item for item in stored if not item.track and not item.replayed]
+        if stored and not outstanding:
             return
 
         students = self.students.data or {}
@@ -1475,6 +1491,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return
 
         recovered: dict[int, list[RunArrival]] = {}
+        attempted: set[int] = set()
         for child_id, student in students.items():
             entity_id = tracker_entity_id(self.hass, child_id)
             if entity_id is None:
@@ -1504,6 +1521,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     if (centre := self._window_centre(child_id, run)) is not None
                 },
             )
+            attempted.add(child_id)
             if arrivals:
                 recovered[child_id] = arrivals
                 _LOGGER.info(
@@ -1516,8 +1534,15 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             merged = _merge_arrivals(self._arrivals.get(child_id, []), arrivals)
             self._arrivals[child_id] = _trim_per_run(merged)
 
-        # Recorded even when nothing new was found, so an instance whose
-        # recorder has no history left does not replay on every restart.
+        # Mark every arrival the replay covered, including the ones it
+        # recovered nothing for: an arrival older than the recorder keeps can
+        # never gain a track, and without this it would be retried on every
+        # start for ever. Only riders whose tracker was actually read are
+        # marked, so one appearing later still gets its turn.
+        for child_id in attempted:
+            for item in self._arrivals.get(child_id, []):
+                item.replayed = True
+
         self._schema = ARRIVAL_SCHEMA
         await self._async_save_arrivals()
 
@@ -1548,6 +1573,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     recedes=int(item.get("recedes", 0) or 0),
                     stale=int(item.get("stale", 0) or 0),
                     boarded=dt_util.parse_datetime(item.get("boarded") or ""),
+                    replayed=bool(item.get("replayed")),
                 )
                 for item in arrivals
                 if item.get("run") in (RUN_AM, RUN_PM)
@@ -1581,6 +1607,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                             "boarded": (
                                 item.boarded.isoformat() if item.boarded else None
                             ),
+                            "replayed": item.replayed,
                         }
                         for item in arrivals
                     ]
@@ -1720,8 +1747,15 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
         journey = self._approach.get((child_id, run, local_now.date()))
         elapsed = None
+        heading = None
         if journey and journey.track:
             elapsed = int((local_now - journey.track[0][0]).total_seconds())
+            # Which way the bus is going right now, so a past sample taken on
+            # the other side of a U-turn cannot claim to be where it is.
+            heading = heading_of(
+                [(point_lat, point_lon) for _, point_lat, point_lon in journey.track]
+                + [(lat, lon)]
+            )
 
         radius = (
             ROUTE_MATCH_RADIUS_KM if self.distance_in_km else ROUTE_MATCH_RADIUS_MILES
@@ -1732,7 +1766,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if item.run == run
             and not item.substitute
             and item.track
-            and (left := nearest_remaining(item.track, lat, lon, elapsed, radius))
+            and (
+                left := nearest_remaining(
+                    item.track, lat, lon, elapsed, radius, heading=heading
+                )
+            )
             is not None
         )
         if len(remainders) < MIN_ROUTE_SAMPLES:
