@@ -243,21 +243,22 @@ ATTR_JOURNEY_ID: Final = "journey_id"
 
 # How the estimate was arrived at, loosest to tightest.
 #
-# BASIS_PROGRESS is the one that answers "where is it along the route". Every
-# past journey's track records how far out the bus was at each moment, so
-# today's distance can be looked up against them: the last time the bus was
-# this far out, how long did it still have? That responds continuously to a
-# run going quickly - a stop skipped because nobody was aboard - where the
-# rung ladder only re-anchors at four fixed distances and the clock median
-# does not respond at all.
-# Where the bus is on the ROUTE, matched against where past journeys
-# physically were. This is the only basis that survives a bus driving away
-# from the stop, which it does constantly: it serves other children, turns
-# round in cul-de-sacs, and doubles back. Straight-line distance reads all of
-# that as setbacks, so an estimate built on it slides forward with the clock
-# and never converges.
+# BASIS_ROUTE is where the bus is on the ROUTE, matched against where past
+# journeys physically were. It is the only basis that survives a bus driving
+# away from the stop, which it does constantly: it serves other children,
+# turns round in cul-de-sacs, and doubles back. Straight-line distance reads
+# all of that as setbacks, so an estimate built on it slides forward with the
+# clock and never converges.
+#
+# There was a BASIS_PROGRESS here, from the version that looked today's
+# DISTANCE up against past distances rather than matching positions. Nothing
+# has emitted it since 3.0.0 replaced it, but it outlived the code by long
+# enough to matter: two dashboard cards were still keyed on "progress", so
+# the moment the route matcher finally ran they would have rendered a blank
+# explanation and a missing sample count. A constant kept for a value nothing
+# produces is not harmless - it reads like a live option to whatever consumes
+# it next.
 BASIS_ROUTE: Final = "route"
-BASIS_PROGRESS: Final = "progress"
 BASIS_APPROACH: Final = "approach"
 BASIS_HISTORICAL: Final = "historical"
 
