@@ -28,7 +28,7 @@ every stage transition can be tested directly at any instant of a school day.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.util import dt as dt_util
 
@@ -72,6 +72,10 @@ class Journey:
         return self.stage != STAGE_IDLE
 
 
+# Half a minute, the point a target rounds up to the next displayed minute.
+_HALF_MINUTE = 30
+
+
 def _same_day(moment: datetime | None, now: datetime) -> bool:
     """Return whether a local instant falls on the same day as ``now``."""
     return moment is not None and dt_util.as_local(moment).date() == now.date()
@@ -89,6 +93,22 @@ def _closing(distance: float | None, outer: float) -> int | None:
     if distance is None:
         return None
     return max(0, min(100, round(((outer - min(distance, outer)) / outer) * 100)))
+
+
+def _to_the_minute(moment: datetime) -> datetime:
+    """Round a target to the minute it will be displayed as.
+
+    The estimate carries microseconds, so the raw target moves on every poll
+    even when nothing has really changed. Anything watching it for a reason to
+    act — a notification deciding whether to re-push — then fires every thirty
+    seconds and says the same thing each time.
+
+    A card shows minutes. Rounding here means the target changes exactly when
+    the reader would see it change, which makes "has the estimate moved" a
+    question the attribute can answer on its own.
+    """
+    rounded = moment.replace(second=0, microsecond=0)
+    return rounded + timedelta(minutes=1) if moment.second >= _HALF_MINUTE else rounded
 
 
 def _run_of(moment: datetime) -> str:
@@ -168,7 +188,7 @@ def journey_stage(
             return Journey(
                 stage=STAGE_TO_SCHOOL if morning else STAGE_FROM_SCHOOL,
                 progress=_fraction(boarded, local_target, now),
-                target=local_target,
+                target=_to_the_minute(local_target),
                 boarded=boarded,
                 journey_id=_journey_id(boarded),
             )
@@ -188,7 +208,7 @@ def journey_stage(
             # being predicted, and this wants to know what is happening.
             stage=STAGE_TO_HOME if _run_of(now) == RUN_PM else STAGE_TO_STOP,
             progress=_closing(distance, outer_rung),
-            target=dt_util.as_local(next_arrival),
+            target=_to_the_minute(dt_util.as_local(next_arrival)),
             journey_id=_journey_id(now),
         )
 

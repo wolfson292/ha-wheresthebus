@@ -182,6 +182,13 @@ journeys came near this spot. When none did — a detour, or a substitute on
 another route — the estimate says so by falling back rather than reporting a
 confident number derived from nothing.
 
+The target is rounded to the minute it will be displayed as. That is not
+cosmetic: the estimate carries microseconds and is recomputed every thirty
+seconds, so a raw target moves constantly while saying the same thing, and
+anything watching it for a reason to act fires on every poll. Rounded, it
+changes exactly when a reader would see it change — which lets a notification
+re-push the moment the estimate really moves, and stay quiet when it has not.
+
 A run stays the next arrival until its window shuts or the bus actually comes.
 A predicted time going by does not end it — the bus is late, not cancelled —
 and the card reads "any moment now" rather than counting up. Rolling on to

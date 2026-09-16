@@ -303,3 +303,70 @@ def test_arriving_home_is_not_a_walk_to_the_stop_because_tomorrow_is_next() -> N
 
     assert journey.stage == "home"
     assert journey.progress == 100
+
+
+def test_the_target_only_moves_when_the_displayed_minute_moves() -> None:
+    """So "has the estimate changed" is a question the attribute can answer.
+
+    The estimate carries microseconds and is recomputed every thirty seconds,
+    so the raw target drifts constantly while saying the same thing. Anything
+    watching it for a reason to re-push a notification fired on every poll.
+
+    A card shows minutes, so the target is rounded to the minute it will be
+    read as. Two estimates that display identically now compare equal.
+    """
+    early = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(8, 1, 12),
+        next_run="am",
+        prediction_source="learned",
+    )
+    later = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(8, 1, 29),
+        next_run="am",
+        prediction_source="learned",
+    )
+
+    assert early.target == later.target == _at(8, 1)
+
+
+def test_a_target_past_the_half_minute_rounds_up() -> None:
+    """Rounding, not truncation: 8:01:45 is shown as 8:02, so it targets 8:02."""
+    journey = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(8, 1, 45),
+        next_run="am",
+        prediction_source="learned",
+    )
+
+    assert journey.target == _at(8, 2)
+
+
+def test_a_real_change_in_the_estimate_still_moves_the_target() -> None:
+    """The rounding must not swallow a change worth telling somebody about."""
+    before = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(8, 1),
+        next_run="am",
+        prediction_source="learned",
+    )
+    after = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(7, 56),
+        next_run="am",
+        prediction_source="learned",
+    )
+
+    assert before.target != after.target
+    assert after.target == _at(7, 56)
