@@ -1642,6 +1642,20 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             for item in self._arrivals.get(child_id, [])
         )
 
+    def _still_due(self, child_id: int, run: str, local_now: datetime) -> bool:
+        """Whether today's run is past its expected time but has not been yet.
+
+        A run does not stop being the next arrival because its predicted time
+        went by. The bus is late, not cancelled, and until its window shuts it
+        is still the next time the bus comes.
+        """
+        student = (self.students.data or {}).get(child_id)
+        if student is None:
+            return False
+        scheduled = student.am_scheduled if run == RUN_AM else student.pm_scheduled
+        window = run_window(scheduled, local_now, self._window_centre(child_id, run))
+        return window is not None and local_now <= window[1]
+
     def predict_next_arrival(self, child_id: int) -> ArrivalPrediction | None:
         """Predict when the bus next reaches this rider's stop."""
         student = (self.students.data or {}).get(child_id)
@@ -1716,8 +1730,20 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                     second=0,
                     microsecond=0,
                 )
+                # A time that has gone by still counts while today's window
+                # is open and the bus has not come. Rolling on to tomorrow at
+                # that point is what made the afternoon of 15 Sep flap: the
+                # anchored estimate kept landing a few minutes ahead, the
+                # clock caught up with it, the prediction jumped to tomorrow
+                # morning, the journey collapsed to idle — and the next rung
+                # crossing started it all again. Three journeys in seventy
+                # minutes, three Live Activities started and cleared, and the
+                # iOS push-to-start budget gone by the following morning.
+                overdue = day_offset == 0 and self._still_due(
+                    child_id, run, local_now
+                )
                 if (
-                    moment > local_now
+                    (moment > local_now or overdue)
                     and moment.weekday() in service
                     and not self._already_arrived(child_id, run, moment.date())
                 ):

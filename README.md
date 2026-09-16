@@ -182,6 +182,14 @@ journeys came near this spot. When none did — a detour, or a substitute on
 another route — the estimate says so by falling back rather than reporting a
 confident number derived from nothing.
 
+A run stays the next arrival until its window shuts or the bus actually comes.
+A predicted time going by does not end it — the bus is late, not cancelled —
+and the card reads "any moment now" rather than counting up. Rolling on to
+tomorrow at that point made the afternoon of 15 Sep flap between "riding home"
+and nothing three times in seventy minutes, each flap starting and clearing a
+Live Activity, which spent the iOS push-to-start budget and left the next
+morning with no notification at all.
+
 Failing that, as the bus closes in the estimate **re-anchors to the live approach**. Each
 arrival records how long the rest of the journey took from 3, 2, 1 and 0.5
 miles out, and the estimate uses the tightest of those the bus has already

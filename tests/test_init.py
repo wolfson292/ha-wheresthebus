@@ -1266,3 +1266,75 @@ async def test_a_run_that_has_already_arrived_is_not_offered_as_the_next_one(
     assert prediction is not None
     assert prediction.run == "pm"
     assert dt_util.as_local(prediction.arrival).date() == date(2026, 9, 15)
+
+
+async def test_an_overdue_run_stays_the_next_arrival_until_its_window_shuts(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The afternoon of 15 Sep, which cost the next morning's Live Activity.
+
+    The bus ran its route near the stop without serving it, weaving in and out
+    of the two mile rung. Each inward crossing re-anchored the estimate a few
+    minutes ahead; the clock caught up with it; the prediction rolled on to
+    tomorrow morning; the journey collapsed to idle — and the next crossing
+    began the whole thing again. Three journeys in seventy minutes, so three
+    Live Activities started and cleared, and by the next morning the iOS
+    push-to-start budget was spent and nothing appeared at all.
+
+    A run does not stop being the next arrival because its predicted time went
+    by. The bus is late, not cancelled. It stays today's run until its window
+    shuts or it actually arrives — one journey, one activity.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    {
+                        "run": "pm",
+                        "at": datetime(
+                            2026, 9, day, 17, 21, tzinfo=dt_util.get_default_time_zone()
+                        ).isoformat(),
+                        "closest": 0.0,
+                        "legs": {"0": 450, "1": 360, "2": 270, "3": 120},
+                        "track": [],
+                        "replayed": True,
+                    }
+                    for day in (8, 9, 10, 11, 14)
+                ]
+            },
+        },
+    }
+
+    with freeze_time_local(2026, 9, 15, 17, 24):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+
+        # Out beyond the outer rung, so nothing is anchored and nothing on the
+        # route matches: the historical branch is the one answering, which is
+        # the branch that used to roll on to tomorrow here.
+        mock_api.async_get_rider_info.return_value = _at_distance(5.0)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+        overdue = buses.predict_next_arrival(12345678)
+
+    # 17:21 has gone by and the bus has not come. It is still this afternoon's
+    # bus that arrives next, not tomorrow morning's.
+    assert overdue is not None
+    assert overdue.run == "pm"
+    assert dt_util.as_local(overdue.arrival).date() == date(2026, 9, 15)
+
+    # Once the window shuts the afternoon really is over, and only then does
+    # the answer become tomorrow.
+    with freeze_time_local(2026, 9, 15, 17, 55):
+        after = buses.predict_next_arrival(12345678)
+
+    assert after is not None
+    assert after.run == "am"
+    assert dt_util.as_local(after.arrival).date() == date(2026, 9, 16)
