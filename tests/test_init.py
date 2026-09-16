@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from math import degrees
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -28,6 +28,7 @@ from custom_components.wheresthebus.const import (
     CONF_RIDER_TRACKER,
     DOMAIN,
 )
+from custom_components.wheresthebus.coordinator import ArrivalPrediction
 
 from .fixtures import RIDER_INFO, STUDENT_SCANS, USER_INFO
 
@@ -1451,3 +1452,58 @@ async def test_a_phone_left_at_school_is_not_a_ride_home(
 
     assert journey is not None
     assert journey.state == "idle"
+
+
+async def test_a_noisy_estimate_does_not_republish_every_wobble(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+) -> None:
+    """The ride home of 16 Sep, where the answer was right and would not sit still.
+
+    The route match is accurate and noisy at once. Across twenty minutes the
+    target swung between 17:18 and 17:30, changing every thirty to sixty
+    seconds, while the bus arrived within a minute of where the median had sat
+    the whole time. The dashboard band jittered and a notification watching
+    the target pushed twenty-five times in twenty minutes, which leaks haptics
+    onto a watch and spends the iOS update budget to say nothing.
+
+    Driven through the steadying directly, because a frozen clock with fixed
+    inputs produces the same estimate twice and so proves nothing. The noise
+    being modelled here is in the estimate, not in the passage of time.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    def at(minute: int, second: int = 0) -> ArrivalPrediction:
+        when = datetime(
+            2026, 9, 16, 17, minute, second, tzinfo=dt_util.get_default_time_zone()
+        )
+        return ArrivalPrediction(
+            run="pm",
+            arrival=when,
+            source="learned",
+            basis="route",
+            samples=5,
+            spread=10,
+            outliers=0,
+            scheduled=time(17, 48),
+            earliest=when - timedelta(minutes=2),
+            latest=when + timedelta(minutes=2),
+        )
+
+    now = datetime(2026, 9, 16, 16, 50, tzinfo=dt_util.get_default_time_zone())
+
+    settled = buses._steady(at(21), now)
+    assert settled.arrival == at(21).arrival
+
+    # A wobble inside the hysteresis: the estimate moved, the answer must not.
+    wobble = buses._steady(at(22, 30), now)
+    assert wobble.arrival == at(21).arrival
+
+    # The band travels with it, so the two never contradict each other.
+    assert wobble.earliest <= wobble.arrival <= wobble.latest
+
+    # A real move is still a real move.
+    moved = buses._steady(at(25), now)
+    assert moved.arrival == at(25).arrival

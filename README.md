@@ -181,6 +181,15 @@ journeys came near this spot. When none did — a detour, or a substitute on
 another route — the estimate says so by falling back rather than reporting a
 confident number derived from nothing.
 
+The published arrival **holds still unless the estimate really moves** — more
+than two minutes. The route match is accurate and noisy at once: on one ride
+home it swung across twelve minutes, changing every thirty to sixty seconds,
+while the bus arrived within a minute of where the median sat the whole time.
+Republishing each wobble made the dashboard band jitter and drove a
+notification to push twenty-five times in twenty minutes. The band is not
+frozen with it — its width still narrows as the bus closes in, recentred on
+the arrival being shown, so the two never contradict each other.
+
 The target is rounded to the minute it will be displayed as. That is not
 cosmetic: the estimate carries microseconds and is recomputed every thirty
 seconds, so a raw target moves constantly while saying the same thing, and

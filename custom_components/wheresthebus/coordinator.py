@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -29,6 +29,7 @@ from .const import (
     ANCHOR_LADDER_MILES,
     APPROACH_LEAD_MINUTES,
     ARRIVAL_HISTORY_LIMIT,
+    ARRIVAL_HYSTERESIS_SECONDS,
     ARRIVAL_SCHEMA,
     ARRIVAL_STORAGE_KEY,
     ARRIVAL_STORAGE_VERSION,
@@ -1029,6 +1030,9 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         # leaks into the next.
         self._phone_origin: dict[_RunKey, tuple[datetime, float, float]] = {}
         self._phone_asked: dict[_RunKey, datetime] = {}
+        # The arrival most recently told to the world, so a noisy estimate is
+        # not republished every thirty seconds saying almost the same thing.
+        self._published: dict[_RunKey, datetime] = {}
         self._store: Store[dict[str, list[dict[str, Any]]]] = Store(
             hass,
             ARRIVAL_STORAGE_VERSION,
@@ -1911,7 +1915,47 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
         if not candidates:
             return None
-        return min(candidates, key=lambda item: item.arrival)
+        return self._steady(min(candidates, key=lambda item: item.arrival), local_now)
+
+    def _steady(
+        self, prediction: ArrivalPrediction, local_now: datetime
+    ) -> ArrivalPrediction:
+        """Hold the published arrival still unless the estimate really moved.
+
+        The route match is accurate and noisy at once: it swung across twelve
+        minutes on the ride home of 16 Sep, changing every thirty to sixty
+        seconds, while the bus arrived within a minute of where the median sat
+        the whole time. Republishing each wobble made the dashboard band
+        jitter and drove twenty-five notification pushes in twenty minutes.
+
+        So the arrival moves only when a new estimate differs by more than the
+        hysteresis. The BAND is not frozen with it: its width still narrows as
+        the bus closes in, recentred on the arrival being shown, so the two
+        never contradict each other.
+
+        Rounding the target to the minute, added earlier the same day, was an
+        attempt at this that addressed the wrong thing - it removed microsecond
+        drift from a value whose real problem was minute-scale noise.
+        """
+        key = (0, prediction.run, dt_util.as_local(prediction.arrival).date())
+        held = self._published.get(key)
+        if held is None or abs((prediction.arrival - held).total_seconds()) > (
+            ARRIVAL_HYSTERESIS_SECONDS
+        ):
+            # Keep only today's, so this cannot grow without bound.
+            self._published = {
+                k: v for k, v in self._published.items() if k[2] == key[2]
+            }
+            self._published[key] = prediction.arrival
+            return prediction
+
+        shift = held - prediction.arrival
+        return replace(
+            prediction,
+            arrival=held,
+            earliest=prediction.earliest + shift if prediction.earliest else None,
+            latest=prediction.latest + shift if prediction.latest else None,
+        )
 
     def _route_arrival(
         self, child_id: int, run: str, local_now: datetime

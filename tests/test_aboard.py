@@ -11,7 +11,7 @@ from __future__ import annotations
 from custom_components.wheresthebus.aboard import travelled_with_the_bus
 
 # A school, and a point three miles away down the route.
-SCHOOL = (40.7600, -74.0400)
+SCHOOL = (40.7550, -74.0400)
 DOWN_THE_ROUTE = (40.7300, -74.0250)
 
 MOVED = 0.5
@@ -43,7 +43,7 @@ def test_a_lift_home_in_a_car_is_not_the_bus() -> None:
     Collected at the gate and driven the other way: the phone has travelled
     well over the threshold, and is nowhere near the bus.
     """
-    driven_away = (40.7900, -74.0700)
+    driven_away = (40.7150, -74.0550)
 
     assert not travelled_with_the_bus(
         SCHOOL, driven_away, DOWN_THE_ROUTE, moved=MOVED, together=TOGETHER
@@ -57,8 +57,8 @@ def test_standing_beside_a_loading_bus_is_not_riding_it() -> None:
     the exact moment the question gets asked. Without the distance-travelled
     test this would read as aboard every single afternoon, scan or no scan.
     """
-    on_the_kerb = (40.76005, -74.04005)
-    bus_still_loading = (40.7601, -74.0401)
+    on_the_kerb = (40.75505, -74.04005)
+    bus_still_loading = (40.7551, -74.0401)
 
     assert not travelled_with_the_bus(
         SCHOOL, on_the_kerb, bus_still_loading, moved=MOVED, together=TOGETHER

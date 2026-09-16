@@ -46,14 +46,29 @@ NOT_COORDINATES = {
 PRECISE = re.compile(r"-?\d+\.\d{4,}")
 
 
-def _ls_files() -> list[str]:
-    """Every file git is tracking, which is exactly what gets published."""
+def _ls_files(*, tracked_only: bool = False) -> list[str]:
+    """Every file this repository would publish, tracked or about to be.
+
+    Untracked-but-not-ignored files count. This guard first fired on a file it
+    had itself been unable to see: tests/test_aboard.py carried coordinates
+    outside the town and passed every run until the commit that tracked it,
+    because the scan only asked git what it was already tracking. A check that
+    cannot see a new file is no check at the moment a new file is written,
+    which is exactly when one is needed.
+    """
     git = shutil.which("git")
     assert git, "git is needed to tell what this repository publishes"
-    out = subprocess.run(  # noqa: S603
-        [git, "ls-files", "-z"], cwd=REPO, capture_output=True, text=True, check=True
-    )
-    return [name for name in out.stdout.split("\0") if name]
+
+    def run(*args: str) -> list[str]:
+        out = subprocess.run(  # noqa: S603
+            [git, *args], cwd=REPO, capture_output=True, text=True, check=True
+        )
+        return [name for name in out.stdout.split("\0") if name]
+
+    names = run("ls-files", "-z")
+    if not tracked_only:
+        names += run("ls-files", "-z", "--others", "--exclude-standard")
+    return names
 
 
 def _scanned() -> list[Path]:
@@ -88,7 +103,7 @@ def test_no_coordinate_outside_the_fictional_town_is_committed() -> None:
 
 def test_recorded_journeys_are_ignored_rather_than_tracked() -> None:
     """The directory real journeys land in must never be in the tree."""
-    tracked = _ls_files()
+    tracked = _ls_files(tracked_only=True)
 
     assert not [name for name in tracked if "tests/journeys/" in name]
     assert not [name for name in tracked if name.endswith(".journey.json")]

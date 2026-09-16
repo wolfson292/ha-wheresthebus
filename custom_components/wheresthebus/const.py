@@ -103,6 +103,24 @@ APPROACH_LEAD_MINUTES: Final = 45
 # that rung by this factor, which is loose enough to ignore GPS jitter.
 RECEDE_HYSTERESIS: Final = 1.15
 
+# How far a new estimate has to move before the published one follows it.
+#
+# The route match is accurate but noisy: it answers from wherever the bus is
+# now against wherever past journeys were, and that answer moves by whole
+# minutes between polls. Measured on the ride home of 16 Sep it swung across
+# twelve minutes - 17:18 to 17:30 - changing every thirty to sixty seconds,
+# while the actual arrival landed within a minute of the median all along.
+#
+# Publishing every one of those was worse than useless. The dashboard band
+# jittered, and a notification watching the target pushed twenty-five times in
+# twenty minutes, which leaks haptics onto a watch and spends the iOS update
+# budget for no information.
+#
+# Two minutes is wider than the noise and narrower than anything worth being
+# told about: a genuinely earlier bus still moves it, a poll-to-poll wobble
+# does not.
+ARRIVAL_HYSTERESIS_SECONDS: Final = 120
+
 # Answering "did the rider board" from their phone, when no scan says so.
 #
 # Both thresholds are needed and neither alone would do. A phone that has
