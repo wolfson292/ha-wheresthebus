@@ -110,6 +110,38 @@ def _to_the_minute(moment: datetime) -> datetime:
     return rounded + timedelta(minutes=1) if moment.second >= _HALF_MINUTE else rounded
 
 
+def _after_the_ride_home(ended: datetime | None, now: datetime) -> Journey | None:
+    """Return the settled stage once the afternoon ride has finished.
+
+    A morning arrival STARTS a journey - the bus collects the rider and the
+    ride to school begins. An afternoon arrival ENDS one. Nothing encoded that
+    asymmetry, so the afternoon could restart itself: on 16 Sep the bus
+    reached the stop at 17:20, the rider got off, and the bus then worked the
+    neighbourhood for another seventeen minutes - 0.0, 0.6, 1.3, 0.7, 0.4 -
+    re-entering the rungs twice. Each time, the aboard rule fired again and
+    announced a ride home that had already finished, the last of them
+    computing a fresh seven-minute estimate from a bus that happened to be
+    near the house while the rider was indoors.
+
+    Holds the finished card for the dwell, then goes quiet. That the LAST
+    thing pushed is a FINISHED card matters more than it looks: the
+    notification no longer clears anything, so whatever it said last is what
+    stands on the phone until iOS retires it. Ending mid-ride left "riding
+    home, 7 min" frozen there.
+
+    Returns None when the ride home has not ended today, meaning the ordinary
+    rules apply.
+    """
+    if ended is None or not _same_day(ended, now):
+        return None
+    since = (now - dt_util.as_local(ended)).total_seconds()
+    if since < 0:
+        return None
+    if since <= ARRIVED_DWELL_MINUTES * 60:
+        return Journey(stage=STAGE_HOME, progress=100, journey_id=_journey_id(ended))
+    return Journey(stage=STAGE_IDLE)
+
+
 def _run_of(moment: datetime) -> str:
     """Return which of the day's two runs a local instant belongs to."""
     return RUN_AM if dt_util.as_local(moment).hour < NOON_HOUR else RUN_PM
@@ -128,6 +160,7 @@ def journey_stage(
     last_pickup: datetime | None,
     last_dropoff: datetime | None,
     approach_open: bool,
+    ride_home_ended: datetime | None = None,
 ) -> Journey:
     """Return the rider's current stage.
 
@@ -137,6 +170,11 @@ def journey_stage(
     already on the bus as though they were still waiting for it.
     """
     at_stop = distance is not None and distance <= arrival_threshold
+
+    # 0. The ride home is over, and stays over.
+    settled = _after_the_ride_home(ride_home_ended, now)
+    if settled is not None:
+        return settled
 
     # 1. Just scanned off the bus. Holds briefly, then lets the day go quiet.
     #

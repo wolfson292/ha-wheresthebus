@@ -197,6 +197,19 @@ anything watching it for a reason to act fires on every poll. Rounded, it
 changes exactly when a reader would see it change — which lets a notification
 re-push the moment the estimate really moves, and stay quiet when it has not.
 
+**An afternoon arrival ends the ride; a morning arrival starts one.** That
+asymmetry is explicit, because without it the afternoon restarts itself: the
+bus reaches the stop, the rider gets off, and the bus then works the
+neighbourhood for another quarter of an hour, crossing back inside the rungs
+and re-announcing a ride home that has already finished. Once the bus has
+reached the stop for the afternoon run, that run is over — the finished card
+holds briefly and then the day goes quiet.
+
+That the *last* thing pushed is a finished card matters more than it looks.
+The notification no longer clears anything, so whatever it said last stands on
+the phone until iOS retires it. A journey that ends mid-ride leaves "riding
+home, 7 min" frozen there while the rider is indoors.
+
 **The afternoon needs a scan — or the rider's phone.** Whether the rider is on the bus is not a thing
 to infer from the clock — they scan a badge to board it. The ride home is
 measured from that scan, against the predicted arrival. Without one there is

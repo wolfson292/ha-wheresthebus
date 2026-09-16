@@ -40,6 +40,7 @@ def _stage(**overrides):
         "last_pickup": None,
         "last_dropoff": None,
         "approach_open": False,
+        "ride_home_ended": None,
     }
     args.update(overrides)
     return journey_stage(**args)
@@ -433,4 +434,73 @@ def test_an_afternoon_scan_gives_the_ride_home_by_elapsed_time() -> None:
     )
 
     assert journey.stage == "from_school"
+    assert journey.progress == 50
+
+
+def test_the_ride_home_does_not_restart_when_the_bus_comes_back_past() -> None:
+    """16 Sep, and the notification that said she was riding home indoors.
+
+    The bus reached the stop at 17:20 and she got off. It then worked the
+    neighbourhood for seventeen minutes — 0.0, 0.6, 1.3, 0.7, 0.4 — crossing
+    back inside the rungs twice. Each re-entry restarted the aboard rule,
+    which announced a ride home that had already finished; the last one
+    computed a fresh seven-minute estimate from a bus that simply happened to
+    be near the house.
+
+    A morning arrival starts a journey. An afternoon arrival ends one.
+    """
+    journey = _stage(
+        now=_at(17, 37),
+        distance=0.4,
+        approach_open=True,
+        last_pickup=_at(16, 15),
+        next_arrival=_at(17, 44),
+        next_run="pm",
+        prediction_source="learned",
+        ride_home_ended=_at(17, 20),
+    )
+
+    assert journey.stage == "idle"
+
+
+def test_the_finished_card_is_the_last_thing_said() -> None:
+    """Because nothing clears it any more, the last push has to be right.
+
+    The journey-end clear was removed so activities are not destroyed — which
+    means whatever was pushed last simply stands on the phone until iOS
+    retires it. A journey that ends mid-ride therefore leaves a card saying
+    the rider is still on the bus. Holding the finished state for the dwell is
+    what makes the final push a finished one.
+    """
+    journey = _stage(
+        now=_at(17, 22),
+        distance=0.1,
+        approach_open=True,
+        last_pickup=_at(16, 15),
+        next_arrival=_at(17, 20),
+        next_run="pm",
+        prediction_source="learned",
+        ride_home_ended=_at(17, 20),
+    )
+
+    assert journey.stage == "home"
+    assert journey.progress == 100
+
+
+def test_a_morning_arrival_still_starts_the_ride_to_school() -> None:
+    """The asymmetry, guarded: only the AFTERNOON arrival is terminal.
+
+    Reaching the stop in the morning is the bus collecting the rider, and the
+    ride to school follows it. If arriving were treated as terminal in both
+    directions, the morning journey would end at the moment it began.
+    """
+    journey = _stage(
+        now=_at(8, 43),
+        distance=6.0,
+        last_pickup=_at(8, 1),
+        school_arrival=_at(9, 25),
+        ride_home_ended=None,
+    )
+
+    assert journey.stage == "to_school"
     assert journey.progress == 50

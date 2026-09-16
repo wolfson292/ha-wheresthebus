@@ -1255,6 +1255,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             last_pickup=boarded,
             last_dropoff=dropoff.timestamp if dropoff else None,
             approach_open=open_now,
+            ride_home_ended=self._ride_home_ended(child_id, local_now),
         )
 
     def gps_fix_time(self, child_id: int) -> datetime | None:
@@ -1791,6 +1792,24 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             item.run == run and dt_util.as_local(item.arrival).date() == day
             for item in self._arrivals.get(child_id, [])
         )
+
+    def _ride_home_ended(self, child_id: int, local_now: datetime) -> datetime | None:
+        """Return when this afternoon's bus reached the stop, if it has.
+
+        Read from the pending arrival as well as the promoted ones, because an
+        arrival is not written to history until its window shuts - half an
+        hour after the rider is already indoors, which is far too late to be
+        the thing that ends the journey.
+        """
+        day = local_now.date()
+        pending = self._pending.get((child_id, RUN_PM, day))
+        if pending is not None and pending[0] <= self._arrival_threshold:
+            return dt_util.as_local(pending[1])
+        for item in self._arrivals.get(child_id, []):
+            when = dt_util.as_local(item.arrival)
+            if item.run == RUN_PM and when.date() == day:
+                return when
+        return None
 
     def _still_due(self, child_id: int, run: str, local_now: datetime) -> bool:
         """Whether today's run is past its expected time but has not been yet.
