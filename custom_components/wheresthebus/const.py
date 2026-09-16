@@ -217,7 +217,6 @@ STAGE_AT_STOP: Final = "at_stop"
 STAGE_TO_SCHOOL: Final = "to_school"
 STAGE_AT_SCHOOL: Final = "at_school"
 STAGE_FROM_SCHOOL: Final = "from_school"
-STAGE_TO_HOME: Final = "to_home"
 STAGE_HOME: Final = "home"
 JOURNEY_STAGES: Final = [
     STAGE_IDLE,
@@ -226,7 +225,6 @@ JOURNEY_STAGES: Final = [
     STAGE_TO_SCHOOL,
     STAGE_AT_SCHOOL,
     STAGE_FROM_SCHOOL,
-    STAGE_TO_HOME,
     STAGE_HOME,
 ]
 

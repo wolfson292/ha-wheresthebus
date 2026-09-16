@@ -94,7 +94,6 @@ with the numbers that belong to it:
 | `to_school` | Aboard, riding to school | Elapsed against the learned ride |
 | `at_school` | Scanned off at school, briefly | 100 |
 | `from_school` | Aboard, riding home | Elapsed against the predicted arrival |
-| `to_home` | Bus approaching home, afternoon | Distance closed from 3 miles |
 | `home` | At the home stop, or scanned off there | 100 |
 
 Alongside it: `target` (the instant being counted towards), `boarded`, and
@@ -188,6 +187,22 @@ seconds, so a raw target moves constantly while saying the same thing, and
 anything watching it for a reason to act fires on every poll. Rounded, it
 changes exactly when a reader would see it change — which lets a notification
 re-push the moment the estimate really moves, and stay quiet when it has not.
+
+**The afternoon needs a scan.** Whether the rider is on the bus is not a thing
+to infer from the clock — they scan a badge to board it. The ride home is
+measured from that scan, against the predicted arrival. Without one there is
+no ride home to show, and nothing is displayed.
+
+The morning is deliberately different: the scan happens on boarding, so in the
+morning there cannot be one yet, and the approach is shown on the window and
+the live distance. Requiring a scan there would hide the one reading that
+decides when to walk out of the door.
+
+That asymmetry was learned the hard way. An afternoon approach that opened on
+the clock alone showed a bus coming home on a day the rider was not aboard,
+then flapped in and out of idle as the estimate slid past — three Live
+Activities started and cleared in seventy minutes, which spent the next
+morning's iOS push-to-start budget and left it with no notification at all.
 
 A run stays the next arrival until its window shuts or the bus actually comes.
 A predicted time going by does not end it — the bus is late, not cancelled —

@@ -370,3 +370,67 @@ def test_a_real_change_in_the_estimate_still_moves_the_target() -> None:
 
     assert before.target != after.target
     assert after.target == _at(7, 56)
+
+
+def test_no_afternoon_journey_without_a_scan_saying_the_rider_is_aboard() -> None:
+    """15 Sep, and the reason the next morning had no notification at all.
+
+    The rider did not ride. The bus ran a nearby route anyway, and the
+    afternoon window opened at 16:36 on the clock alone — for a bus that was
+    never coming to this stop. It then flapped in and out of idle as the
+    estimate slid past, starting and clearing three Live Activities in seventy
+    minutes and spending the push-to-start budget the next morning needed.
+
+    Whether the rider is on the bus is not a guess. They scan a badge to board
+    it. No afternoon scan, no ride home, nothing to show.
+    """
+    journey = _stage(
+        now=_at(16, 40),
+        distance=4.0,
+        approach_open=True,
+        next_arrival=_at(17, 21),
+        next_run="pm",
+        prediction_source="learned",
+    )
+
+    assert journey.stage == "idle"
+
+
+def test_the_morning_approach_needs_no_scan_because_none_can_exist_yet() -> None:
+    """The asymmetry, and why this is not simply "require a scan".
+
+    The scan happens on BOARDING. In the morning the bus is still on its way
+    to collect the rider, so there cannot be one — requiring it would mean
+    never showing the approach that matters most, the one you read while
+    deciding when to walk out of the door.
+    """
+    journey = _stage(
+        now=_at(7, 50),
+        distance=1.5,
+        approach_open=True,
+        next_arrival=_at(8, 1),
+        next_run="am",
+        prediction_source="learned",
+    )
+
+    assert journey.stage == "to_stop"
+    assert journey.progress == 50
+
+
+def test_an_afternoon_scan_gives_the_ride_home_by_elapsed_time() -> None:
+    """And with the scan, the afternoon is rule 3 — which knows more.
+
+    Being aboard is measured from the time of boarding against the predicted
+    arrival, which is real progress. The approach branch could only ever have
+    offered distance to the stop, which says nothing while the bus works its
+    route. So nothing was lost by removing it.
+    """
+    journey = _stage(
+        now=_at(16, 50),
+        distance=4.0,
+        last_pickup=_at(16, 14),
+        next_arrival=_at(17, 26),
+    )
+
+    assert journey.stage == "from_school"
+    assert journey.progress == 50

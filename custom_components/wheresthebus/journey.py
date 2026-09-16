@@ -43,7 +43,6 @@ from .const import (
     STAGE_FROM_SCHOOL,
     STAGE_HOME,
     STAGE_IDLE,
-    STAGE_TO_HOME,
     STAGE_TO_SCHOOL,
     STAGE_TO_STOP,
 )
@@ -193,20 +192,34 @@ def journey_stage(
                 journey_id=_journey_id(boarded),
             )
 
-    # 4. Not aboard, but the bus is making its approach. Only once the run has
-    #    actually been learned: anchored to a timetable that was twenty
-    #    minutes out, this fired after the bus had already been and gone.
+    # 4. Nobody aboard, but the bus is coming to collect them. MORNING ONLY,
+    #    and that asymmetry is the point: in the morning there cannot be a
+    #    scan yet, because the scan happens on boarding. In the afternoon
+    #    there can be, and its absence means the rider is not on the bus.
+    #
+    #    An afternoon approach used to fire on the clock alone. On 15 Sep the
+    #    rider did not ride, the bus ran a nearby route anyway, and the window
+    #    opened at 16:36 for a bus that was never coming — then flapped in and
+    #    out of idle as the estimate slid past, starting and clearing three
+    #    Live Activities in seventy minutes and spending the next morning's
+    #    push-to-start budget.
+    #
+    #    A ride home with a scan is rule 3, which measures real progress from
+    #    the time aboard. So there is nothing an afternoon branch here could
+    #    say that is both true and not already said.
+    #
+    #    Only once the run has been learned: anchored to a timetable twenty
+    #    minutes out, this used to fire after the bus had already gone.
     if (
         approach_open
+        and _run_of(now) == RUN_AM
         and prediction_source == SOURCE_LEARNED
         and _same_day(next_arrival, now)
         and next_arrival is not None
         and next_run is not None
     ):
         return Journey(
-            # The clock again, for the same reason: next_run says what is
-            # being predicted, and this wants to know what is happening.
-            stage=STAGE_TO_HOME if _run_of(now) == RUN_PM else STAGE_TO_STOP,
+            stage=STAGE_TO_STOP,
             progress=_closing(distance, outer_rung),
             target=_to_the_minute(dt_util.as_local(next_arrival)),
             journey_id=_journey_id(now),

@@ -288,16 +288,14 @@
     title: >-
       {{ {'to_stop': 'Bus on the way to the stop', 'at_stop': 'At the stop now',
       'to_school': 'On board — riding to school', 'at_school': 'Arrived at school',
-      'from_school': 'On board — riding home', 'to_home': 'Bus on the way home',
-      'home': 'Home'}.get(stage, '') }}
-    detail: "{% if stage in ['to_stop', 'to_home'] %}{{ dist }} miles away · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }} · due {{ due }}{% elif stage == 'to_school' %}{{ 'Arriving at school any moment' if mins <= 0 else mins ~ ' min to school' }}{% elif stage == 'from_school' %}{{ dist }} miles from home · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }}{% elif stage == 'at_stop' %}The bus has arrived — time to board{% elif stage == 'at_school' %}Dropped off safely{% elif stage == 'home' %}The bus is at the stop now{% endif %}"
+      'from_school': 'On board — riding home',       'home': 'Home'}.get(stage, '') }}
+    detail: "{% if stage == 'to_stop' %}{{ dist }} miles away · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }} · due {{ due }}{% elif stage == 'to_school' %}{{ 'Arriving at school any moment' if mins <= 0 else mins ~ ' min to school' }}{% elif stage == 'from_school' %}{{ dist }} miles from home · {{ 'arriving any moment' if mins <= 0 else mins ~ ' min' }}{% elif stage == 'at_stop' %}The bus has arrived — time to board{% elif stage == 'at_school' %}Dropped off safely{% elif stage == 'home' %}The bus is at the stop now{% endif %}"
     colour: >-
-      {{ {'to_stop': '#FFC72C', 'to_home': '#FFC72C', 'at_stop': '#4CAF50',
+      {{ {'to_stop': '#FFC72C', 'at_stop': '#4CAF50',
       'to_school': '#4CAF50', 'from_school': '#4CAF50', 'at_school': '#2196F3',
       'home': '#2196F3'}.get(stage, '#4CAF50') }}
     glyph: >-
-      {{ {'to_stop': 'mdi:bus-school', 'to_home': 'mdi:bus-school',
-      'at_stop': 'mdi:bus-stop', 'to_school': 'mdi:bus-school',
+      {{ {'to_stop': 'mdi:bus-school',       'at_stop': 'mdi:bus-stop', 'to_school': 'mdi:bus-school',
       'from_school': 'mdi:bus-school', 'at_school': 'mdi:school',
       'home': 'mdi:home'}.get(stage, 'mdi:bus-school') }}
   triggers:

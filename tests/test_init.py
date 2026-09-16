@@ -999,7 +999,6 @@ async def test_the_journey_sensor_reports_the_current_stage(
         "to_school",
         "at_school",
         "from_school",
-        "to_home",
         "home",
     ]
 
