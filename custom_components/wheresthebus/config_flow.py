@@ -19,6 +19,8 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -31,6 +33,7 @@ from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .const import (
     CONF_BUS_SCAN_INTERVAL,
     CONF_DEVICE_ID,
+    CONF_RIDER_TRACKER,
     CONF_STUDENT_SCAN_INTERVAL,
     DEFAULT_BUS_SCAN_INTERVAL,
     DEFAULT_STUDENT_SCAN_INTERVAL,
@@ -178,14 +181,16 @@ class WheresTheBusOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(
-                data={
-                    CONF_BUS_SCAN_INTERVAL: int(user_input[CONF_BUS_SCAN_INTERVAL]),
-                    CONF_STUDENT_SCAN_INTERVAL: int(
-                        user_input[CONF_STUDENT_SCAN_INTERVAL]
-                    ),
-                }
-            )
+            saved = {
+                CONF_BUS_SCAN_INTERVAL: int(user_input[CONF_BUS_SCAN_INTERVAL]),
+                CONF_STUDENT_SCAN_INTERVAL: int(user_input[CONF_STUDENT_SCAN_INTERVAL]),
+            }
+            # An empty selection clears it, rather than storing "" and then
+            # spending every afternoon looking up an entity that is not there.
+            tracker = (user_input.get(CONF_RIDER_TRACKER) or "").strip()
+            if tracker:
+                saved[CONF_RIDER_TRACKER] = tracker
+            return self.async_create_entry(data=saved)
 
         options = self.config_entry.options
         return self.async_show_form(
@@ -220,6 +225,15 @@ class WheresTheBusOptionsFlow(OptionsFlow):
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
+                    # Optional. Only consulted on an afternoon with no badge
+                    # scan, to tell a rider who is on the bus from one who
+                    # stayed at school.
+                    vol.Optional(
+                        CONF_RIDER_TRACKER,
+                        description={
+                            "suggested_value": options.get(CONF_RIDER_TRACKER)
+                        },
+                    ): EntitySelector(EntitySelectorConfig(domain="device_tracker")),
                 }
             ),
         )

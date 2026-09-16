@@ -23,7 +23,11 @@ from custom_components.wheresthebus.api import (
     WheresTheBusAuthError,
     WheresTheBusError,
 )
-from custom_components.wheresthebus.const import ARRIVAL_SCHEMA, DOMAIN
+from custom_components.wheresthebus.const import (
+    ARRIVAL_SCHEMA,
+    CONF_RIDER_TRACKER,
+    DOMAIN,
+)
 
 from .fixtures import RIDER_INFO, STUDENT_SCANS, USER_INFO
 
@@ -367,19 +371,28 @@ async def test_scan_history_is_restored_after_a_restart(
 async def test_next_arrival_falls_back_to_the_schedule(
     hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_api: AsyncMock
 ) -> None:
-    """With no observed arrivals yet, the prediction is the scheduled time."""
-    await setup_entry(hass, mock_config_entry)
+    """With no observed arrivals yet, the prediction is the scheduled time.
 
-    arrival = hass.states.get("sensor.robin_alex_rivera_next_arrival")
-    assert arrival is not None
-    assert arrival.attributes["prediction_source"] == "scheduled"
-    assert arrival.attributes["samples"] == 0
-    assert arrival.attributes["run"] in ("am", "pm")
+    Frozen to the middle of the night deliberately. This used to run on the
+    wall clock and assert the predicted time was still ahead, which quietly
+    stopped being true when an overdue run began holding its place: between
+    07:26 and 08:26 the morning run is past its time and still owed, so the
+    prediction is correctly in the past and the test failed for an hour a day.
+    A test that depends on when it is run is not testing the code.
+    """
+    with freeze_time_local(2026, 9, 16, 3, 0):
+        await setup_entry(hass, mock_config_entry)
 
-    # Whichever run is next, the predicted clock time is its scheduled one.
-    predicted = dt_util.as_local(dt_util.parse_datetime(arrival.state))
-    assert predicted.strftime("%H:%M") == arrival.attributes["scheduled"]
-    assert predicted > dt_util.as_local(dt_util.utcnow())
+        arrival = hass.states.get("sensor.robin_alex_rivera_next_arrival")
+        assert arrival is not None
+        assert arrival.attributes["prediction_source"] == "scheduled"
+        assert arrival.attributes["samples"] == 0
+        assert arrival.attributes["run"] == "am"
+
+        # Whichever run is next, the predicted clock time is its scheduled one.
+        predicted = dt_util.as_local(dt_util.parse_datetime(arrival.state))
+        assert predicted.strftime("%H:%M") == arrival.attributes["scheduled"]
+        assert predicted > dt_util.as_local(dt_util.utcnow())
 
 
 async def test_arrival_is_learned_from_a_close_pass(
@@ -1337,3 +1350,104 @@ async def test_an_overdue_run_stays_the_next_arrival_until_its_window_shuts(
     assert after is not None
     assert after.run == "am"
     assert dt_util.as_local(after.arrival).date() == date(2026, 9, 16)
+
+
+def _phone_at(hass: HomeAssistant, lat: float, lon: float) -> None:
+    """Put the rider's phone somewhere."""
+    hass.states.async_set(
+        "device_tracker.rider_phone",
+        "not_home",
+        {"latitude": lat, "longitude": lon, "source_type": "gps"},
+    )
+
+
+async def test_the_phone_carries_an_afternoon_the_badge_scan_missed(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+) -> None:
+    """Three of the first nine school days had no afternoon scan.
+
+    Each one looked exactly like a day the rider was not on the bus, so the
+    whole afternoon went unreported. The phone answers the same question: it
+    was at the school when the window opened, and it is now a mile away and
+    travelling with the bus, so she is on it.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_RIDER_TRACKER: "device_tracker.rider_phone",
+        },
+    )
+    school = (RIDER_INFO["stpLat"] + 0.1, RIDER_INFO["stpLon"])
+
+    with freeze_time_local(2026, 9, 16, 17, 5):
+        _phone_at(hass, *school)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+
+        # Window open, phone still at school: nothing has happened yet.
+        mock_api.async_get_rider_info.return_value = _at_distance(6.0)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+        assert hass.states.get("sensor.robin_alex_rivera_journey").state == "idle"
+
+    # The bus has left, and the phone has gone with it.
+    with freeze_time_local(2026, 9, 16, 17, 20):
+        aboard = _at_distance(4.0)
+        _phone_at(hass, aboard["busLat"], aboard["busLon"])
+        mock_api.async_get_rider_info.return_value = aboard
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+        journey = hass.states.get("sensor.robin_alex_rivera_journey")
+
+    assert journey is not None
+    assert journey.state == "from_school"
+    assert journey.attributes["boarded"] is not None
+
+
+async def test_a_phone_left_at_school_is_not_a_ride_home(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+) -> None:
+    """15 Sep: she did not ride, and the bus ran its route anyway.
+
+    Announcing a ride home on the clock alone is what flapped three Live
+    Activities in seventy minutes and spent the next morning's push-to-start
+    budget. A phone that never left the school settles it.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            CONF_RIDER_TRACKER: "device_tracker.rider_phone",
+        },
+    )
+    school = (RIDER_INFO["stpLat"] + 0.1, RIDER_INFO["stpLon"])
+
+    with freeze_time_local(2026, 9, 16, 17, 5):
+        _phone_at(hass, *school)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+        mock_api.async_get_rider_info.return_value = _at_distance(6.0)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    with freeze_time_local(2026, 9, 16, 17, 20):
+        # The bus has gone. The phone has not.
+        _phone_at(hass, *school)
+        mock_api.async_get_rider_info.return_value = _at_distance(4.0)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+        journey = hass.states.get("sensor.robin_alex_rivera_journey")
+
+    assert journey is not None
+    assert journey.state == "idle"

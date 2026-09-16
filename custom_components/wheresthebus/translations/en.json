@@ -31,14 +31,16 @@
     "step": {
       "init": {
         "title": "WheresTheBus options",
-        "description": "How often to poll each part of the WheresTheBus API.",
+        "description": "How often to poll each part of the WheresTheBus API, and optionally whose phone to fall back on when a badge scan is missed.",
         "data": {
           "bus_scan_interval": "Bus location update interval",
-          "student_scan_interval": "Roster and ID scan update interval"
+          "student_scan_interval": "Roster and ID scan update interval",
+          "rider_tracker": "Rider's phone (optional)"
         },
         "data_description": {
           "bus_scan_interval": "How often the live bus position is refreshed. The app itself refreshes every 15 seconds.",
-          "student_scan_interval": "How often stop details and ID scan history are refreshed."
+          "student_scan_interval": "How often stop details and ID scan history are refreshed.",
+          "rider_tracker": "Only consulted on an afternoon with no badge scan, to tell a rider who is on the bus from one who stayed at school. Its position when the window opens is compared with its position once the bus has gone: travelled, and with the bus, means aboard. Leave empty to rely on the scan alone. An iCloud3 tracker is asked directly for a fresh fix, which takes a few seconds; any other tracker is read at whatever rate it updates itself."
         }
       }
     }

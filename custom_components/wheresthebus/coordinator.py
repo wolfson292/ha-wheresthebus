@@ -12,13 +12,19 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .aboard import travelled_with_the_bus
 from .api import WheresTheBusApi, WheresTheBusAuthError, WheresTheBusError
 from .backfill import async_position_history, tracker_entity_id
 from .const import (
+    ABOARD_MOVED_KM,
+    ABOARD_MOVED_MILES,
+    ABOARD_TOGETHER_KM,
+    ABOARD_TOGETHER_MILES,
     ANCHOR_LADDER_KM,
     ANCHOR_LADDER_MILES,
     APPROACH_LEAD_MINUTES,
@@ -32,10 +38,12 @@ from .const import (
     BASIS_APPROACH,
     BASIS_HISTORICAL,
     BASIS_ROUTE,
+    CONF_RIDER_TRACKER,
     COORD_PRECISION,
     DAYS_AHEAD,
     DOMAIN,
     GPS_FIX_HYSTERESIS,
+    LOCATE_INTERVAL_MINUTES,
     MIN_ROUTE_SAMPLES,
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
@@ -122,6 +130,26 @@ class ArrivalPrediction:
     # one, otherwise the timetable. Exposed because a window centred on a
     # timetable that is twenty minutes out is the failure it hides behind.
     centre: time | None = None
+
+
+# A rider's run on a given day: what every per-run cache here is keyed by.
+type _RunKey = tuple[int, str, date]
+
+
+def _run_of(moment: datetime) -> str:
+    """Return which of the day's two runs a local instant belongs to."""
+    return RUN_AM if dt_util.as_local(moment).hour < _NOON else RUN_PM
+
+
+def _is_today_pm(scan: ScanEvent | None) -> bool:
+    """Return whether a scan is this afternoon's, rather than this morning's."""
+    if scan is None:
+        return False
+    when = dt_util.as_local(scan.timestamp)
+    return (
+        when.date() == dt_util.as_local(dt_util.utcnow()).date()
+        and _run_of(when) == RUN_PM
+    )
 
 
 @dataclass(slots=True)
@@ -996,6 +1024,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         self.students = students
         self.distance_in_km = False
         self._last_server_time: dict[int, int] = {}
+        # Where the rider's phone was when a run's window opened, and when it
+        # was last asked. Keyed by run and day so one afternoon's answer never
+        # leaks into the next.
+        self._phone_origin: dict[_RunKey, tuple[datetime, float, float]] = {}
+        self._phone_asked: dict[_RunKey, datetime] = {}
         self._store: Store[dict[str, list[dict[str, Any]]]] = Store(
             hass,
             ARRIVAL_STORAGE_VERSION,
@@ -1062,6 +1095,111 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         """Return how close counts as an arrival, in the account's units."""
         return ARRIVAL_THRESHOLD_KM if self.distance_in_km else ARRIVAL_THRESHOLD_MILES
 
+    def _bus_position(self, child_id: int) -> tuple[float, float] | None:
+        """Return where this rider's bus is now, if it is reporting."""
+        info = (self.data or {}).get(child_id) or {}
+        try:
+            return float(info["busLat"]), float(info["busLon"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _phone_position(self) -> tuple[float, float] | None:
+        """Return where the rider's phone is, from the configured tracker."""
+        entity_id = self.config_entry.options.get(CONF_RIDER_TRACKER)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        try:
+            return (
+                float(state.attributes["latitude"]),
+                float(state.attributes["longitude"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _ask_the_phone_where_it_is(self, local_now: datetime, key: _RunKey) -> None:
+        """Ask the tracker's integration for a fresh fix, at most now and then.
+
+        A phone sitting still in a school is polled every fifteen minutes,
+        which is useless for a question asked as the bus pulls away — a fix
+        that old is miles stale by the time it matters. Asking directly
+        returns an eight metre position in twenty to thirty seconds.
+
+        Only iCloud3 is asked, because it is the only tracker here that
+        exposes a locate-now command. Any other tracker is simply read at
+        whatever rate it updates itself, which may or may not be enough.
+        """
+        asked = self._phone_asked.get(key)
+        if asked is not None and local_now - asked < timedelta(
+            minutes=LOCATE_INTERVAL_MINUTES
+        ):
+            return
+
+        entity_id = self.config_entry.options.get(CONF_RIDER_TRACKER)
+        entry = er.async_get(self.hass).async_get(entity_id) if entity_id else None
+        if entry is None or entry.platform != "icloud3" or entry.device_id is None:
+            return
+
+        self._phone_asked[key] = local_now
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "icloud3",
+                "action",
+                {
+                    "command": "Locate Device(s) using iCloud",
+                    "device_name": entry.device_id,
+                },
+                blocking=False,
+            )
+        )
+
+    def _boarded_by_phone(
+        self, child_id: int, run: str, local_now: datetime
+    ) -> datetime | None:
+        """Return when the rider left school, if their phone says they did.
+
+        Only consulted when the badge scan is missing. Three of the first nine
+        school days observed had no afternoon scan, and each of those cost the
+        whole afternoon's notification — the run looked identical to a day the
+        rider was not on the bus at all.
+
+        Two fixes settle it. The first is taken when the window opens, while
+        the bus is still loading; the second once it has gone. Travelled AND
+        with the bus means aboard. Either alone is not enough: a car going the
+        other way has travelled, and a phone on the kerb beside a loading bus
+        is near it.
+
+        The time returned is when the window opened, not when the answer
+        arrived. That is roughly when the bus was at the school, which is what
+        the progress bar should fill from — a fix that lands ten minutes late
+        should not make the ride look ten minutes shorter.
+        """
+        key = (child_id, run, local_now.date())
+        phone = self._phone_position()
+        if phone is None:
+            return None
+
+        origin = self._phone_origin.get(key)
+        if origin is None:
+            # First look of this window: this is where they started.
+            self._phone_origin[key] = (local_now, phone[0], phone[1])
+            self._ask_the_phone_where_it_is(local_now, key)
+            return None
+
+        self._ask_the_phone_where_it_is(local_now, key)
+        moved = ABOARD_MOVED_KM if self.distance_in_km else ABOARD_MOVED_MILES
+        together = ABOARD_TOGETHER_KM if self.distance_in_km else ABOARD_TOGETHER_MILES
+        aboard = travelled_with_the_bus(
+            (origin[1], origin[2]),
+            phone,
+            self._bus_position(child_id),
+            moved=moved,
+            together=together,
+        )
+        return origin[0] if aboard else None
+
     def journey(self, child_id: int, student: Student) -> Journey:
         """Return which stage of the run this rider is currently in.
 
@@ -1093,6 +1231,14 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
         pickup = student.last_scan_of(SCAN_PICKUP)
         dropoff = student.last_scan_of(SCAN_DROPOFF)
+
+        # The scan is the signal and always wins. Only when this afternoon has
+        # none is the phone asked, and only then are any locate requests made
+        # — so on a day the badge was scanned, none of this runs at all.
+        boarded = pickup.timestamp if pickup else None
+        if open_now and _run_of(local_now) == RUN_PM and not _is_today_pm(pickup):
+            boarded = self._boarded_by_phone(child_id, RUN_PM, local_now) or boarded
+
         return journey_stage(
             now=local_now,
             distance=distance,
@@ -1102,7 +1248,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             next_run=prediction.run if prediction else None,
             prediction_source=prediction.source if prediction else None,
             school_arrival=school.arrival if school else None,
-            last_pickup=pickup.timestamp if pickup else None,
+            last_pickup=boarded,
             last_dropoff=dropoff.timestamp if dropoff else None,
             approach_open=open_now,
         )
@@ -1739,9 +1885,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 # crossing started it all again. Three journeys in seventy
                 # minutes, three Live Activities started and cleared, and the
                 # iOS push-to-start budget gone by the following morning.
-                overdue = day_offset == 0 and self._still_due(
-                    child_id, run, local_now
-                )
+                overdue = day_offset == 0 and self._still_due(child_id, run, local_now)
                 if (
                     (moment > local_now or overdue)
                     and moment.weekday() in service

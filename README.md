@@ -188,10 +188,25 @@ anything watching it for a reason to act fires on every poll. Rounded, it
 changes exactly when a reader would see it change — which lets a notification
 re-push the moment the estimate really moves, and stay quiet when it has not.
 
-**The afternoon needs a scan.** Whether the rider is on the bus is not a thing
+**The afternoon needs a scan — or the rider's phone.** Whether the rider is on the bus is not a thing
 to infer from the clock — they scan a badge to board it. The ride home is
 measured from that scan, against the predicted arrival. Without one there is
 no ride home to show, and nothing is displayed.
+
+Set **Rider's phone** in the options to cover a forgotten scan. It is asked
+only on an afternoon with no scan, and only twice: where the phone is when the
+window opens, while the bus is still loading, and where it is once the bus has
+gone. Travelled a good distance **and** with the bus means aboard. Either test
+alone is useless — a car going the other way has travelled, and a phone on the
+kerb beside a loading bus is right next to it.
+
+An iCloud3 tracker is asked directly for a fresh fix, which returns an eight
+metre position in twenty to thirty seconds; its own polling is fifteen minutes
+when a phone sits still, which is far too stale for a bus pulling away. Any
+other tracker is simply read at whatever rate it updates itself.
+
+The scan always wins. On a day the badge is scanned none of this runs, and no
+location is requested at all.
 
 The morning is deliberately different: the scan happens on boarding, so in the
 morning there cannot be one yet, and the approach is shown on the window and

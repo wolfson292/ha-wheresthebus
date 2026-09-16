@@ -23,6 +23,10 @@ DEVICE_OS: Final = "Web_safari_Flutter"
 CONF_DEVICE_ID: Final = "device_id"
 CONF_BUS_SCAN_INTERVAL: Final = "bus_scan_interval"
 CONF_STUDENT_SCAN_INTERVAL: Final = "student_scan_interval"
+# The rider's own phone, used only to answer "did they get on" when the badge
+# scan is missing. Optional: without it the scan is the sole signal, which is
+# how this worked before and is still correct, just less forgiving.
+CONF_RIDER_TRACKER: Final = "rider_tracker"
 
 # ``getRiderInfoEx`` advertises a 15 second refresh.  30 seconds keeps the bus
 # marker useful while halving the request rate against a third-party service.
@@ -98,6 +102,30 @@ APPROACH_LEAD_MINUTES: Final = 45
 # eight minutes wrong.  A crossing is discarded once the bus is back outside
 # that rung by this factor, which is loose enough to ignore GPS jitter.
 RECEDE_HYSTERESIS: Final = 1.15
+
+# Answering "did the rider board" from their phone, when no scan says so.
+#
+# Both thresholds are needed and neither alone would do. A phone that has
+# merely MOVED could be in a car going the other way. A phone merely NEAR the
+# bus could be its owner standing on the kerb while it loads — which is the
+# exact moment and place the question gets asked, so proximity on its own
+# would read as aboard every afternoon of the year.
+#
+# Half a mile is far enough that a walk across the school grounds does not
+# count, and short enough to be reached within a minute or two of setting off.
+ABOARD_MOVED_MILES: Final = 0.5
+ABOARD_MOVED_KM: Final = 0.8
+# A school bus is about twelve metres long and a GPS fix is good to eight, so
+# a quarter mile is generous. It is not trying to prove which seat.
+ABOARD_TOGETHER_MILES: Final = 0.25
+ABOARD_TOGETHER_KM: Final = 0.4
+# How often to ask the phone where it is while the question is open. iCloud3
+# polls on its own schedule - fifteen minutes when the phone is sitting still,
+# which is precisely the case here - and a forced locate returns an eight
+# metre fix in twenty to thirty seconds. Asking every few minutes through one
+# afternoon window is a handful of lookups on the days a scan was forgotten,
+# and none at all on the days it was not.
+LOCATE_INTERVAL_MINUTES: Final = 4
 
 # How close the bus must come for a pass to count as "it stopped here".  A run
 # where nobody boards can stay half a mile out, so a loose threshold would
