@@ -165,6 +165,48 @@ def test_a_journey_predicts_itself_almost_exactly() -> None:
     assert worst < 1.0
 
 
+def _at_pace(journey: Journey, factor: float) -> Journey:
+    """Return the same route driven at a different speed.
+
+    Positions and arrival time are untouched; every sample's distance from
+    the end is stretched, so the bus visits exactly the same places having
+    taken ``factor`` times as long to get to each of them.
+    """
+    return Journey(
+        run=journey.run,
+        stop=journey.stop,
+        boarded=journey.boarded,
+        arrived=journey.arrived,
+        samples=[
+            (journey.arrived - (journey.arrived - at) * factor, lat, lon)
+            for at, lat, lon in journey.samples
+        ],
+    )
+
+
+def _history_for(journey: Journey) -> list[Journey]:
+    """Return past journeys to score ``journey`` against — never itself.
+
+    Scoring a journey against its own track asks the model a question it
+    cannot get wrong: every query lands on a recorded fix whose answer is the
+    truth by construction, and both a good matcher and a bad one score 0.01
+    minutes. Every accuracy claim made that way is vacuous.
+
+    With three or more recordings this holds the journey out and uses the
+    real ones. With fewer it builds a history that is honestly synthetic: the
+    same roads driven slower. That cannot prove the model accurate — only
+    real held-out journeys can — but it can prove the error has the right
+    shape, which is what this file exists to check.
+    """
+    if len(RECORDED) >= 3:
+        return [
+            _load(other.name)
+            for other in RECORDED
+            if _load(other.name).arrived != journey.arrived
+        ]
+    return [_at_pace(journey, 1.15), _at_pace(journey, 1.25)]
+
+
 @needs_journeys
 def test_the_estimate_converges_rather_than_sliding_with_the_clock() -> None:
     """The fault that this whole exercise exists to catch.
@@ -175,19 +217,38 @@ def test_the_estimate_converges_rather_than_sliding_with_the_clock() -> None:
     minutes away" for twelve minutes straight.
 
     Matching a position cannot do that, and the shape of the error proves it:
-    whatever it says far out, it must be tighter near the end.
+    an error that tracks the clock stays the same size all the way to the
+    stop, while one that comes from a mis-paced history shrinks with the
+    distance still to run. So the test is that the error keeps shrinking,
+    band by band, and is small in absolute terms by the end.
     """
     journey = _load(RECORDED[0].name)
-    scored = _route_error_minutes(journey, [journey, journey])
+    scored = _route_error_minutes(journey, _history_for(journey))
+    assert scored, "the model answered at no point in the journey"
 
-    far = [abs(error) for left, error in scored if left > 30]
-    near = [abs(error) for left, error in scored if left <= 5]
+    bands = [(30, 999), (10, 30), (5, 10), (0, 5)]
+    worst = []
+    for low, high in bands:
+        errors = [abs(error) for left, error in scored if low < left <= high]
+        assert errors, f"no answers with {low}-{high} minutes left"
+        worst.append(max(errors))
 
-    assert far
-    assert near
-    assert max(near) <= max(far)
+    # Guards the test against becoming vacuous again: if the history were
+    # today's journey, every answer would be right by construction and the
+    # three assertions below would all pass on errors of a hundredth of a
+    # minute. There has to be a real error out there to converge FROM.
+    assert worst[0] > 1.0, (
+        f"the history is too close to today to prove anything: {worst}"
+    )
+
+    assert worst == sorted(worst, reverse=True), (
+        f"the error must shrink as the stop nears, got {worst}"
+    )
+    # Non-increasing is not enough: an error that tracks the clock is FLAT,
+    # and flat is sorted. It has to actually converge.
+    assert worst[-1] < worst[0] / 3
     # And the last word is close enough to act on.
-    assert max(near) < 2.0
+    assert worst[-1] < 2.0
 
 
 @needs_journeys
