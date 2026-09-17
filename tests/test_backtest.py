@@ -16,11 +16,15 @@ Two faults this would have caught before shipping, in seconds:
   called validated, and was wrong about within the hour. A backtest scores
   every instant, so one agreeable point cannot pass for a result.
 
-These tests need recorded journeys under tests/journeys, which are NOT in the
-repository and must never be. Moving the coordinates does not anonymise a
-route: a few miles of turns is a fingerprint that can be matched against the
-road network and put straight back on the map, and this is a child's daily
-route to and from school. The directory is gitignored.
+These tests need recorded journeys, which are NOT in the repository and must
+never be. Moving the coordinates does not anonymise a route: a few miles of
+turns is a fingerprint that can be matched against the road network and put
+straight back on the map, and this is a child's daily route to and from
+school.
+
+Point WTB_JOURNEYS at a directory outside the repository and they are read
+from there, which is the safest arrangement — the files never enter the tree.
+Failing that they are read from tests/journeys, which is gitignored.
 
 Make your own with scripts/capture_journey.py. Without any, these tests skip.
 """
@@ -29,8 +33,10 @@ Make your own with scripts/capture_journey.py. Without any, these tests skip.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -44,7 +50,7 @@ from custom_components.wheresthebus.const import (
 from custom_components.wheresthebus.coordinator import _median, _reject_outliers
 from custom_components.wheresthebus.route import haversine_miles, nearest_remaining
 
-JOURNEYS = Path(__file__).parent / "journeys"
+JOURNEYS = Path(os.environ.get("WTB_JOURNEYS") or Path(__file__).parent / "journeys")
 RECORDED = sorted(JOURNEYS.glob("*.json")) if JOURNEYS.is_dir() else []
 
 # Journeys are local-only, so CI and a fresh clone have none. Skipping is the
@@ -192,3 +198,53 @@ def test_every_recorded_journey_replays(name: str) -> None:
 
     assert journey.track
     assert journey.arrived > journey.boarded
+
+
+@needs_journeys
+def test_the_estimate_does_not_quantise_to_the_sample_spacing() -> None:
+    """Score the model between recorded fixes, not on top of them.
+
+    Replaying a journey against its own track asks only about points the
+    recorder already holds, where any model that finds the right sample is
+    exactly right. The bus spends almost all of its time between those
+    points — thirty seconds apart is a quarter of a mile at road speed — and
+    that is where a nearest-sample match has to round, quantising the answer
+    to the spacing and holding it still while the bus covers the leg.
+
+    So the queries here are the midpoints of the legs the bus actually drove,
+    with the truth taken as the midpoint in time. That assumes the bus held
+    its speed along the leg, which is why legs where it barely moved are
+    skipped and why the bar below is not zero: a stretch where it accelerated
+    genuinely reaches its midpoint off-centre in time.
+    """
+    journey = _load(RECORDED[0].name)
+    track = journey.track
+
+    queries = []
+    for (left, lat, lon), (next_left, next_lat, next_lon) in pairwise(track):
+        if haversine_miles(lat, lon, next_lat, next_lon) < 0.05:
+            continue
+        queries.append(
+            (
+                (lat + next_lat) / 2,
+                (lon + next_lon) / 2,
+                (left + next_left) / 2,
+            )
+        )
+
+    assert len(queries) > 20, "too few moving legs to say anything"
+
+    errors = [
+        abs(truth - answer) / 60
+        for lat, lon, truth in queries
+        if (
+            answer := nearest_remaining(track, lat, lon, None, ROUTE_MATCH_RADIUS_MILES)
+        )
+        is not None
+    ]
+
+    assert len(errors) > 20, "the radius or the ambiguity guard refused too much"
+    # Nearest-sample scored 0.67 mean and 3.77 worst on this journey. A tenth
+    # of a minute leaves room for genuine speed changes within a leg and none
+    # at all for rounding to the nearest fix.
+    assert max(errors) < 0.1
