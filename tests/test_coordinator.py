@@ -25,10 +25,12 @@ from custom_components.wheresthebus.const import (
     RUN_PM as SCAN_RUN_PM,
 )
 from custom_components.wheresthebus.coordinator import (
+    ApproachRecorder,
     RunArrival,
     ScanEvent,
     Student,
     _attach_scans,
+    _median,
     _merge_arrivals,
     _pair_riders,
     _reject_outliers,
@@ -929,3 +931,98 @@ def test_more_rungs_still_wins_over_a_longer_track() -> None:
     merged = _merge_arrivals([thin_ladder], [full_ladder])
 
     assert sorted(merged[0].legs) == [0, 1, 2, 3]
+
+
+def test_a_median_of_two_is_the_midpoint_not_the_later_one() -> None:
+    """MIN_ROUTE_SAMPLES is two, so the even case is the common one.
+
+    Returning the upper of a pair is not a median, it is the later sample,
+    and it biased every two-sample route estimate late by however far the two
+    journeys disagreed.
+    """
+    assert _median([100, 200]) == 150
+    assert _median([100, 200, 300]) == 200
+    assert _median([90, 100, 200, 300]) == 150
+
+
+def test_a_frozen_feed_does_not_pad_the_track() -> None:
+    """A stale reading is the last position repeated, not a new one.
+
+    Sixty identical points spanning a half-hour freeze made any later journey
+    passing that spot match a block of ages thirty minutes wide, and the
+    ambiguity guard then refused to answer at all.
+    """
+    recorder = ApproachRecorder()
+    moving = (40.7300, -74.0230)
+
+    recorder.sample(LADDER, _local(7, 40), 2.5, 0.3, moving)
+    for minute in range(41, 45):
+        recorder.sample(LADDER, _local(7, minute), 2.5, 0.3, moving, fresh=False)
+
+    assert len(recorder.track) == 1
+    assert recorder.stale == 4
+
+
+def test_a_thawing_feed_does_not_stamp_a_crossing_it_never_saw() -> None:
+    """When the feed unfreezes the bus has already moved, unwatched.
+
+    Reading the thaw against the last fix from before the freeze says the bus
+    crossed three rungs at that instant. It did not: it crossed them at some
+    unknown time during the freeze, and a leg measured from the thaw is far
+    shorter than the bus actually took.
+    """
+    recorder = ApproachRecorder()
+    away = (40.7350, -74.0300)
+    near = (40.7160, -74.0030)
+
+    recorder.sample(LADDER, _local(7, 30), 3.5, 0.3, away)
+    for minute in range(31, 50):
+        recorder.sample(LADDER, _local(7, minute), 3.5, 0.3, away, fresh=False)
+    recorder.sample(LADDER, _local(7, 50), 0.6, 0.3, near)
+
+    assert recorder.crossings == {}
+
+
+def test_jitter_at_a_rung_is_not_a_crossing() -> None:
+    """The depot sits at exactly the outer rung, and GPS wobbles.
+
+    Without an inward margin, a stationary bus eventually satisfies "was
+    outside, now inside" on noise alone, and RECEDE_HYSTERESIS can never undo
+    it — jitter of a few metres never reaches 3.45. That records a leg
+    measured from a wobble, and the whole estimate can hang off it.
+    """
+    recorder = ApproachRecorder()
+    depot = (40.7550, -74.0500)
+
+    recorder.sample(LADDER, _local(6, 58), 3.01, 0.3, depot)
+    recorder.sample(LADDER, _local(6, 59), 2.99, 0.3, depot)
+
+    assert recorder.crossings == {}
+
+    # A bus that genuinely drives in from outside the margin still counts.
+    recorder.sample(LADDER, _local(7, 10), 3.2, 0.3, depot)
+    recorder.sample(LADDER, _local(7, 12), 2.8, 0.3, depot)
+
+    assert 0 in recorder.crossings
+
+
+def test_arrival_is_the_first_reading_inside_not_the_closest() -> None:
+    """A bus dwelling at the stop gives several readings under the threshold.
+
+    Picking the closest lands on whichever poll happened to have the best
+    fix, so the recorded arrival — and every leg measured back from it —
+    carried a poll of noise for no reason. ApproachRecorder has always ended
+    the journey on first-inside; the replay now agrees with it.
+    """
+    states = [
+        _reading(_local(7, 50), "1.0"),
+        _reading(_local(7, 56), "0.25"),
+        _reading(_local(7, 57), "0.1"),
+        _reading(_local(7, 58), "0.0"),
+        _reading(_local(8, 5), "1.8"),
+    ]
+
+    arrivals = reconstruct_arrivals(states, _rider(), 0.3, LADDER)
+
+    assert len(arrivals) == 1
+    assert dt_util.as_local(arrivals[0].arrival).strftime("%H:%M") == "07:56"

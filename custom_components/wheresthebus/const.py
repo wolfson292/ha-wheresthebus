@@ -103,6 +103,15 @@ APPROACH_LEAD_MINUTES: Final = 45
 # that rung by this factor, which is loose enough to ignore GPS jitter.
 RECEDE_HYSTERESIS: Final = 1.15
 
+# How far OUTSIDE a rung the previous reading must have been for the next one
+# to count as crossing it inward. The bus parks at exactly 3.0 miles, which is
+# the outer rung, so a bare "was above, now at or below" is satisfied sooner
+# or later by GPS jitter while the bus stands still — and RECEDE_HYSTERESIS
+# cannot undo it, because a few metres of wobble never reaches 3.45. Two per
+# cent of three miles is about 320 feet: far more than a fix wanders, far less
+# than a bus travels between polls.
+CROSSING_MARGIN: Final = 1.02
+
 # How far a new estimate has to move before the published one follows it.
 #
 # The route match is accurate but noisy: it answers from wherever the bus is
@@ -119,7 +128,14 @@ RECEDE_HYSTERESIS: Final = 1.15
 # Two minutes is wider than the noise and narrower than anything worth being
 # told about: a genuinely earlier bus still moves it, a poll-to-poll wobble
 # does not.
+# Used only when there is no band to judge against. The hold is normally the
+# band itself: a new estimate is published once it falls outside the range
+# already on display. A flat tolerance is wrong at both ends - too narrow far
+# out, and at ninety seconds from the stop wider than the whole band, so the
+# figure shown could sit outside the range shown beside it.
 ARRIVAL_HYSTERESIS_SECONDS: Final = 120
+# Below this, nothing is worth republishing however tight the band gets.
+ARRIVAL_HYSTERESIS_FLOOR_SECONDS: Final = 30
 
 # The narrowest a route-matched band may claim to be. Two past journeys that
 # happen to agree are not certainty, and on 17 Sep a two-sample match reported

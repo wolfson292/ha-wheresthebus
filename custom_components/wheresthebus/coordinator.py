@@ -29,6 +29,7 @@ from .const import (
     ANCHOR_LADDER_MILES,
     APPROACH_LEAD_MINUTES,
     ARRIVAL_HISTORY_LIMIT,
+    ARRIVAL_HYSTERESIS_FLOOR_SECONDS,
     ARRIVAL_HYSTERESIS_SECONDS,
     ARRIVAL_SCHEMA,
     ARRIVAL_STORAGE_KEY,
@@ -41,6 +42,7 @@ from .const import (
     BASIS_ROUTE,
     CONF_RIDER_TRACKER,
     COORD_PRECISION,
+    CROSSING_MARGIN,
     DAYS_AHEAD,
     DOMAIN,
     GPS_FIX_HYSTERESIS,
@@ -392,17 +394,35 @@ class ApproachRecorder:
             # The journey is over; the bus pulling away is not new information.
             return
 
-        if position is not None:
+        # A stale reading is the LAST known position repeated, not a new one.
+        # Writing it anyway put sixty-odd identical points into a track,
+        # spanning the half hour the feed was frozen, and any later journey
+        # passing that spot then matched a block of ages thirty minutes wide
+        # and was refused as ambiguous. The contamination and the guard
+        # against it were both ours; this removes the first.
+        if position is not None and fresh:
             self.track.append((when, position[0], position[1]))
         if not fresh:
             self.stale += 1
+            # Nor can a frozen feed time a crossing. When it thaws the bus has
+            # already moved, and stamping the rung at the thaw records a leg
+            # far shorter than the bus actually took.
+            self.previous = None
+            return
         if distance <= arrival_threshold:
             self.arrived = True
 
         for rung, threshold in enumerate(ladder):
+            # An inward margin, because the depot sits at EXACTLY the outer
+            # rung. Without it, GPS jitter around 3.0 miles eventually
+            # satisfies "was outside, now inside" while the bus has not moved
+            # at all, and RECEDE_HYSTERESIS can never undo it: jitter of a few
+            # metres never reaches 3.45. That records a leg measured from a
+            # wobble, and on a morning when the route basis declines it is
+            # what the whole estimate hangs off.
             crossed_inward = (
                 self.previous is not None
-                and self.previous > threshold
+                and self.previous > threshold * CROSSING_MARGIN
                 and distance <= threshold
             )
             if crossed_inward:
@@ -547,7 +567,11 @@ def reconstruct_arrivals(
             if arriving is None or not arriving[0] <= local <= arriving[1]:
                 continue
             current = best.get(key)
-            if current is None or distance < current[0]:
+            if current is None or (
+                current[0] > arrival_threshold and distance < current[0]
+            ):
+                # First inside, matching the live path exactly - the whole
+                # reason this function and ApproachRecorder are shared.
                 best[key] = (distance, when)
 
     arrivals: list[RunArrival] = []
@@ -766,8 +790,16 @@ def _load_track(item: dict[str, Any]) -> list[tuple[int, float, float]]:
 
 
 def _median(values: list[int]) -> int:
-    """Return the middle value of a sorted, non-empty list."""
-    return values[len(values) // 2]
+    """Return the middle of a sorted, non-empty list, averaging an even pair.
+
+    Taking the upper of two is not a median, it is the later sample — and
+    with MIN_ROUTE_SAMPLES at two that was the common case, biasing every
+    route estimate late by however far the two journeys disagreed.
+    """
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) // 2
 
 
 def _reject_outliers(
@@ -1414,7 +1446,18 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             if arriving is None or not arriving[0] <= local <= arriving[1]:
                 continue
             best = self._pending.get(key)
-            if best is None or distance < best[0]:
+            if best is None or (
+                best[0] > self._arrival_threshold and distance < best[0]
+            ):
+                # FIRST INSIDE, not closest. A bus dwelling at the stop gives
+                # two or three readings under the threshold and "closest"
+                # lands on whichever happened to have the best fix, so the
+                # recorded arrival - and every leg measured back from it -
+                # carried a poll of noise for no reason. ApproachRecorder has
+                # always ended the journey on first-inside; these now agree.
+                # Until something is inside, the closest so far still stands,
+                # so a run where the bus never arrives is still judged on how
+                # near it got.
                 self._pending[key] = (distance, when)
 
     async def async_restore_in_flight(self) -> None:
@@ -1949,10 +1992,11 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
 
         if not candidates:
             return None
-        return self._steady(min(candidates, key=lambda item: item.arrival), local_now)
+        soonest = min(candidates, key=lambda item: item.arrival)
+        return self._steady(child_id, soonest, local_now)
 
     def _steady(
-        self, prediction: ArrivalPrediction, local_now: datetime
+        self, child_id: int, prediction: ArrivalPrediction, local_now: datetime
     ) -> ArrivalPrediction:
         """Hold the published arrival still unless the estimate really moved.
 
@@ -1962,34 +2006,42 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         the whole time. Republishing each wobble made the dashboard band
         jitter and drove twenty-five notification pushes in twenty minutes.
 
-        So the arrival moves only when a new estimate differs by more than the
-        hysteresis. The BAND is not frozen with it: its width still narrows as
-        the bus closes in, recentred on the arrival being shown, so the two
-        never contradict each other.
+        THE HOLD IS THE BAND, not a fixed two minutes. A flat tolerance is
+        wrong at both ends: far out it is narrower than the real uncertainty
+        and republishes noise, and ninety seconds from the stop it is WIDER
+        than the whole band, so the figure shown can sit outside the range
+        shown beside it. The new estimate is published when it leaves the band
+        currently on display, with a floor so a confident band cannot make
+        this fire every poll.
 
-        Rounding the target to the minute, added earlier the same day, was an
-        attempt at this that addressed the wrong thing - it removed microsecond
-        drift from a value whose real problem was minute-scale noise.
+        The band is no longer shifted to match the held arrival. That kept the
+        two from contradicting each other on screen by moving the honest
+        number to cover for the stale one - the band is what the evidence
+        actually says, and it should say it.
+
+        Keyed per rider. It was keyed on a literal 0 for a day, which would
+        have had two riders sharing one hold; there is only one here, so it
+        never showed.
         """
-        key = (0, prediction.run, dt_util.as_local(prediction.arrival).date())
+        key = (child_id, prediction.run, dt_util.as_local(prediction.arrival).date())
         held = self._published.get(key)
-        if held is None or abs((prediction.arrival - held).total_seconds()) > (
-            ARRIVAL_HYSTERESIS_SECONDS
-        ):
-            # Keep only today's, so this cannot grow without bound.
-            self._published = {
-                k: v for k, v in self._published.items() if k[2] == key[2]
-            }
-            self._published[key] = prediction.arrival
-            return prediction
+        if held is not None and self._close_enough(prediction, held):
+            return replace(prediction, arrival=held)
 
-        shift = held - prediction.arrival
-        return replace(
-            prediction,
-            arrival=held,
-            earliest=prediction.earliest + shift if prediction.earliest else None,
-            latest=prediction.latest + shift if prediction.latest else None,
-        )
+        # Keep only today's, so this cannot grow without bound.
+        self._published = {k: v for k, v in self._published.items() if k[2] == key[2]}
+        self._published[key] = prediction.arrival
+        return prediction
+
+    @staticmethod
+    def _close_enough(prediction: ArrivalPrediction, held: datetime) -> bool:
+        """Whether a held arrival still sits inside what is being claimed."""
+        drift = abs((prediction.arrival - held).total_seconds())
+        if drift <= ARRIVAL_HYSTERESIS_FLOOR_SECONDS:
+            return True
+        if prediction.earliest is None or prediction.latest is None:
+            return drift <= ARRIVAL_HYSTERESIS_SECONDS
+        return prediction.earliest <= held <= prediction.latest
 
     def _route_arrival(
         self, child_id: int, run: str, local_now: datetime

@@ -1499,18 +1499,19 @@ async def test_a_noisy_estimate_does_not_republish_every_wobble(
 
     now = datetime(2026, 9, 16, 16, 50, tzinfo=dt_util.get_default_time_zone())
 
-    settled = buses._steady(at(21), now)
+    settled = buses._steady(12345678, at(21), now)
     assert settled.arrival == at(21).arrival
 
     # A wobble inside the hysteresis: the estimate moved, the answer must not.
-    wobble = buses._steady(at(22, 30), now)
+    wobble = buses._steady(12345678, at(22, 30), now)
     assert wobble.arrival == at(21).arrival
 
-    # The band travels with it, so the two never contradict each other.
+    # The band is NOT moved to cover the held value: it reports what the
+    # evidence says, and the hold only survives while it stays inside.
     assert wobble.earliest <= wobble.arrival <= wobble.latest
 
     # A real move is still a real move.
-    moved = buses._steady(at(25), now)
+    moved = buses._steady(12345678, at(25), now)
     assert moved.arrival == at(25).arrival
 
 
