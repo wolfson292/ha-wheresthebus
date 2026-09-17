@@ -110,6 +110,48 @@ def _sample_heading(track: list[tuple[int, float, float]], index: int) -> float 
     return heading_of([(lat, lon) for _, lat, lon in track[: index + 1]])
 
 
+def _along_segment(
+    lat: float,
+    lon: float,
+    start: tuple[int, float, float],
+    end: tuple[int, float, float],
+) -> tuple[float, float]:
+    """Return how far a point lies from a segment, and the age where it meets.
+
+    A stored track is a handful of fixes, not a road. At thirty miles an hour
+    a thirty-second poll leaves them a quarter of a mile apart — the same as
+    the match radius — so matching a point against SAMPLES means a journey
+    drops in and out of the answer as the bus moves between them, and the
+    median jumps by whole minutes as the set changes underneath it. That churn
+    is most of the noise the published arrival then has to be held still
+    against.
+
+    Between two consecutive fixes the bus was somewhere on the line joining
+    them, and its age somewhere between theirs. Projecting onto that line and
+    interpolating gives a continuous answer instead of a quantised one, and
+    removes the half-poll of rounding that came with picking a sample.
+
+    Locally flat geometry: these are segments of a few hundred yards, where
+    treating latitude and longitude as a plane is wrong by inches.
+    """
+    start_age, start_lat, start_lon = start
+    end_age, end_lat, end_lon = end
+
+    scale = cos(radians((start_lat + end_lat) / 2))
+    run_x = (end_lon - start_lon) * scale
+    run_y = end_lat - start_lat
+    length = run_x * run_x + run_y * run_y
+    if length == 0:
+        return haversine_miles(lat, lon, start_lat, start_lon), float(start_age)
+
+    along = (((lon - start_lon) * scale) * run_x + (lat - start_lat) * run_y) / length
+    along = max(0.0, min(1.0, along))
+    met_lat = start_lat + along * run_y
+    met_lon = start_lon + along * (end_lon - start_lon)
+    age = start_age + along * (end_age - start_age)
+    return haversine_miles(lat, lon, met_lat, met_lon), age
+
+
 def nearest_remaining(
     track: list[tuple[int, float, float]],
     lat: float,
@@ -158,14 +200,22 @@ def nearest_remaining(
     # off it: the first sample is the furthest from arrival.
     span = track[0][0]
 
-    # (disagreement in elapsed time, distance away, seconds left)
-    matches: list[tuple[float, float, int]] = []
-    for index, (age, sample_lat, sample_lon) in enumerate(track):
-        gap = haversine_miles(lat, lon, sample_lat, sample_lon)
+    # (distance away, disagreement in elapsed time, seconds left)
+    #
+    # DISTANCE LEADS, elapsed only separates ties. Elapsed is measured from
+    # the first sample of each track, and those starts are not comparable
+    # between journeys: a track begins when the approach window opens or when
+    # the rider scans on, and the window itself moves as the learned centre
+    # does. Sorting on it first meant the primary key was the least reliable
+    # number available. Direction already tells the two passes of a crossing
+    # apart, which is what elapsed was really being asked to do.
+    matches: list[tuple[float, float, float]] = []
+    for index in range(len(track) - 1):
+        gap, age = _along_segment(lat, lon, track[index], track[index + 1])
         if gap > radius:
             continue
         if heading is not None:
-            was = _sample_heading(track, index)
+            was = _sample_heading(track, index + 1)
             # A sample with no heading of its own is a bus that was standing
             # still there, which is a real place on the route and keeps its
             # claim. Only a sample known to be going the other way is refused.
@@ -174,9 +224,14 @@ def nearest_remaining(
             ):
                 continue
         drift = 0.0 if elapsed is None else abs((span - age) - elapsed)
-        matches.append((drift, gap, age))
+        matches.append((gap, drift, age))
 
     if not matches:
+        # A single-sample track has no segment to project onto.
+        if len(track) == 1:
+            age, only_lat, only_lon = track[0]
+            if haversine_miles(lat, lon, only_lat, only_lon) <= radius:
+                return age
         return None
 
     # If this place meant wildly different things at different times of a past
@@ -188,10 +243,7 @@ def nearest_remaining(
     if max(ages) - min(ages) > _AMBIGUOUS_SPREAD_SECONDS:
         return None
 
-    # Elapsed agreement first, distance second. Both candidates are already
-    # within the radius and going the same way, so the nearer one is not
-    # necessarily the right one.
-    return min(matches)[2]
+    return round(min(matches)[2])
 
 
 __all__ = ["bearing_degrees", "haversine_miles", "heading_of", "nearest_remaining"]

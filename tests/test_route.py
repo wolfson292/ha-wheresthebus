@@ -54,19 +54,46 @@ def test_a_u_turn_is_a_place_on_the_route_not_a_setback() -> None:
     assert nearest_remaining(UTURN, 40.7300, -74.0260, None, RADIUS) == 810
 
 
-def test_elapsed_time_tells_the_outbound_pass_from_the_homeward_one() -> None:
-    """A route crosses itself, and the two passes need different answers.
+def test_position_outranks_elapsed_time_when_the_two_disagree() -> None:
+    """Where the bus is beats how long it has been going. It used to be both.
 
-    The same junction is driven twice, ninety seconds apart. Position alone
-    cannot separate them; how long today's journey has been running can.
+    This junction lies exactly on the outbound leg and a few metres off the
+    homeward one, so position has a clear preference. Elapsed time argues the
+    other way at 150 seconds in — and loses, twice over.
+
+    It lost deliberately. Elapsed is measured from the first sample of each
+    track, and those starting points are not comparable between journeys: a
+    track begins when the approach window opens or when the rider scans on,
+    and the window itself moves as the learned centre does. Ranking on it
+    first made the least reliable number the primary key.
     """
-    outbound = nearest_remaining(UTURN, 40.7300, -74.0231, 90, RADIUS)
-    homeward = nearest_remaining(UTURN, 40.7300, -74.0231, 150, RADIUS)
+    early = nearest_remaining(UTURN, 40.7300, -74.0231, 90, RADIUS)
+    late = nearest_remaining(UTURN, 40.7300, -74.0231, 150, RADIUS)
 
-    assert outbound == 810
-    assert homeward == 750
-    # And they really are different answers, which is the whole point.
-    assert outbound != homeward
+    assert early == 839
+    assert late == 839
+
+
+def test_elapsed_time_still_separates_passes_position_cannot() -> None:
+    """Demoted is not discarded: where position ties, the clock decides.
+
+    This track runs west and comes straight back along the same line, so the
+    query sits precisely on two segments at once — the gap is zero for both
+    and there is nothing left to choose on. Ninety seconds apart in elapsed
+    time picks out opposite legs of the same road.
+    """
+    doubled_back = [
+        (600, 40.7300, -74.0200),
+        (570, 40.7300, -74.0240),
+        (540, 40.7300, -74.0280),
+        (510, 40.7300, -74.0240),
+        (480, 40.7300, -74.0200),
+        (0, 40.7155, -74.0020),
+    ]
+    query = (40.7300, -74.0260)
+
+    assert nearest_remaining(doubled_back, *query, 45, RADIUS) == 555
+    assert nearest_remaining(doubled_back, *query, 105, RADIUS) == 525
 
 
 def test_a_bus_off_the_route_says_so_rather_than_guessing() -> None:
@@ -148,21 +175,21 @@ def test_direction_separates_the_two_passes_of_a_u_turn() -> None:
     ten minutes down drifts against every sample equally and the tie-break
     stops discriminating exactly when it is needed.
 
-    Which way the bus is pointing owes nothing to the clock. The two samples
-    lie 0.0052 miles from the query and from each other, heading 270 and 87 —
-    indistinguishable by position, opposed by direction. Westbound is the
-    outbound pass with 840 seconds left; eastbound is the homeward one with
-    750, a minute and a half nearer home at the very same spot.
+    Which way the bus is pointing owes nothing to the clock. The outbound and
+    homeward legs pass within 0.0052 miles of the query heading 270 and 87 —
+    indistinguishable by position, opposed by direction. Westbound the query
+    falls on the outbound leg with 839 seconds left; eastbound it falls on the
+    homeward one with 748, a minute and a half nearer home at the same spot.
     """
     query = (40.7300, -74.0231)
 
     westbound = nearest_remaining(UTURN, *query, None, RADIUS, heading=270)
     eastbound = nearest_remaining(UTURN, *query, None, RADIUS, heading=90)
 
-    assert westbound == 840
-    assert eastbound == 750
-    # Ninety seconds apart, from one position and two directions.
-    assert westbound - eastbound == 90
+    assert westbound == 839
+    assert eastbound == 748
+    # A minute and a half apart, from one position and two directions.
+    assert westbound - eastbound == 91
 
 
 def test_direction_decides_even_when_elapsed_time_points_the_other_way() -> None:
@@ -175,23 +202,33 @@ def test_direction_decides_even_when_elapsed_time_points_the_other_way() -> None
     """
     left = nearest_remaining(UTURN, 40.7300, -74.0231, 90, RADIUS, heading=90)
 
-    assert left == 750
+    assert left == 748
 
 
 def test_a_halted_sample_keeps_the_direction_it_arrived_travelling() -> None:
     """A parked bus is still somewhere, and it still got there facing a way.
 
     The apex sample has only jitter behind it, so its heading is read from the
-    last fix that genuinely moved: the bus reached this spot going west. That
-    is the right answer rather than a fallback. A bus sitting at the apex
-    pointing west is mid-turn with 780 seconds to run; one passing the same
-    spot going east has already turned and has 750. Same place, different
-    moments in the journey.
+    last fix that genuinely moved: the bus reached this spot going west. It
+    matters that this counts as a real heading rather than no heading at all.
+    Going west, the leg that ends at the apex is the only one left after the
+    homeward leg is refused — and it answers 780. Drop the halted sample as
+    directionless and that leg goes too, leaving the previous one and 810.
+
+    The apex is where the two legs meet, so both directions read 780 there:
+    a bus at the turn has 780 seconds to run whichever way it is pointing,
+    which is the honest answer and avoids a jump at the moment of turning.
+    Direction separates them again as soon as the bus is on one leg or the
+    other.
     """
     apex = (40.7299, -74.0260)
+    on_the_leg = (40.7300, -74.0246)
 
     assert nearest_remaining(UTURN, *apex, None, RADIUS, heading=270) == 780
-    assert nearest_remaining(UTURN, *apex, None, RADIUS, heading=90) == 750
+    assert nearest_remaining(UTURN, *apex, None, RADIUS, heading=90) == 780
+
+    assert nearest_remaining(UTURN, *on_the_leg, None, RADIUS, heading=270) == 824
+    assert nearest_remaining(UTURN, *on_the_leg, None, RADIUS, heading=90) == 765
 
 
 def test_a_sample_with_genuinely_no_heading_is_never_filtered_out() -> None:
