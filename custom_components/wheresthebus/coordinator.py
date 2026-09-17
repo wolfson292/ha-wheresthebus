@@ -2071,11 +2071,31 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         except (KeyError, TypeError, ValueError):
             return None
 
+        # WHEN this position was true, which is not necessarily now. A stale
+        # reading is the last known fix repeated, so measuring the remaining
+        # time forward from the clock adds a second of predicted lateness for
+        # every second the feed stays frozen - the estimate sliding with the
+        # clock, which is the exact failure this whole approach exists to
+        # avoid, arriving through a door nobody was watching. The recorder
+        # already refuses stale fixes; the live match did not.
+        #
+        # Anchoring to the fix instead assumes the bus carried on at the pace
+        # past journeys kept from there, which is the honest guess about a
+        # stretch nobody watched. It is also the safer one: pushing the
+        # arrival later is what puts a child on the kerb after the bus has
+        # gone.
+        status, age = parse_bus_status(info.get("stsMsg"))
+        if status == STATUS_INACTIVE:
+            # Nothing is reporting, so the last position is not a claim about
+            # where the bus is, at any age.
+            return None
+        observed = local_now - timedelta(minutes=age) if age else local_now
+
         journey = self._approach.get((child_id, run, local_now.date()))
         elapsed = None
         heading = None
         if journey and journey.track:
-            elapsed = int((local_now - journey.track[0][0]).total_seconds())
+            elapsed = int((observed - journey.track[0][0]).total_seconds())
             # Which way the bus is going right now, so a past sample taken on
             # the other side of a U-turn cannot claim to be where it is.
             heading = heading_of(
@@ -2106,14 +2126,17 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
         middle = _median(usual)
         # Agreement among a handful of past journeys is not certainty.
         floor = ROUTE_BAND_FLOOR_SECONDS
-        estimate = local_now + timedelta(seconds=middle)
+        estimate = observed + timedelta(seconds=middle)
         if estimate <= local_now:
+            # By this reckoning the bus is already due, which after a long
+            # freeze it may well be. Saying nothing lets a basis that is
+            # anchored to a known instant answer instead.
             return None
         return (
             estimate,
             len(remainders),
-            local_now + timedelta(seconds=min(usual[0], middle - floor)),
-            local_now + timedelta(seconds=max(usual[-1], middle + floor)),
+            observed + timedelta(seconds=min(usual[0], middle - floor)),
+            observed + timedelta(seconds=max(usual[-1], middle + floor)),
         )
 
     def _anchored_arrival(

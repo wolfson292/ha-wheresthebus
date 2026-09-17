@@ -28,7 +28,7 @@ from custom_components.wheresthebus.const import (
     CONF_RIDER_TRACKER,
     DOMAIN,
 )
-from custom_components.wheresthebus.coordinator import ArrivalPrediction
+from custom_components.wheresthebus.coordinator import ArrivalPrediction, RunArrival
 
 from .fixtures import RIDER_INFO, STUDENT_SCANS, USER_INFO
 
@@ -1591,3 +1591,80 @@ async def test_a_run_that_has_arrived_is_dropped_on_every_basis(
 
     assert prediction is not None
     assert prediction.run == "pm"
+
+
+async def test_a_frozen_feed_does_not_push_the_arrival_later_every_poll(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+) -> None:
+    """The estimate must not slide with the clock, through any door.
+
+    A stale reading is the last known fix repeated. Measuring the remaining
+    time forward from the clock therefore adds a second of predicted lateness
+    for every second the feed stays frozen: match a frozen position, get the
+    same "nine minutes" every poll, and publish it as nine minutes from a now
+    that keeps advancing. Over a six minute freeze the arrival walks six
+    minutes later and then snaps back when the feed thaws.
+
+    That is the fault this whole position-matching approach was built to
+    avoid, arriving through the one path that had no freshness check — the
+    recorder refused stale fixes, the live match did not. It also errs the
+    dangerous way round: an estimate pushed later is what leaves a child on
+    the kerb after the bus has gone.
+
+    The fix anchors the answer to when the position was true, so a freeze
+    holds the arrival still rather than deferring it.
+    """
+    await setup_entry(hass, mock_config_entry)
+    buses = mock_config_entry.runtime_data.buses
+
+    # A past journey along a short stretch, ending at the stop.
+    stop = (RIDER_INFO["stpLat"], RIDER_INFO["stpLon"])
+    track = [
+        (600, 40.73100, -73.99500),
+        (450, 40.72700, -73.99800),
+        (300, 40.72300, -74.00000),
+        (150, 40.71900, -74.00100),
+        (0, *stop),
+    ]
+    buses._arrivals[12345678] = [
+        RunArrival(
+            run="pm",
+            arrival=dt_util.as_utc(
+                datetime(2026, 9, day, 17, 30, tzinfo=dt_util.get_default_time_zone())
+            ),
+            closest=0.0,
+            track=list(track),
+        )
+        for day in (14, 15)
+    ]
+
+    def arrival_at(clock: datetime, sts_msg: str) -> datetime | None:
+        """Ask for the route estimate with the bus frozen where it is."""
+        buses.data = {
+            12345678: {
+                **RIDER_INFO,
+                "busLat": 40.72700,
+                "busLon": -73.99800,
+                "stsMsg": sts_msg,
+            }
+        }
+        answer = buses._route_arrival(12345678, "pm", clock)
+        return None if answer is None else answer[0]
+
+    start = datetime(2026, 9, 16, 17, 22, tzinfo=dt_util.get_default_time_zone())
+
+    # Fresh: 450 seconds of route left, so 17:29:30. The baseline.
+    fresh = arrival_at(start, "current")
+    assert fresh == start + timedelta(seconds=450)
+
+    # Now the feed freezes. Six minutes pass and the reported position never
+    # changes, because it is the same fix being repeated.
+    for minute in range(1, 7):
+        frozen = arrival_at(start + timedelta(minutes=minute), f"{minute} min. ago")
+        assert frozen == fresh, f"the arrival moved after {minute} minutes frozen"
+
+    # And a bus whose tracker has stopped reporting altogether has no position
+    # worth matching, at any age.
+    assert arrival_at(start + timedelta(minutes=7), "inactive") is None
