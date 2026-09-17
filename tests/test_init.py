@@ -38,6 +38,11 @@ def freeze_time_local(*parts: int):
     return freeze_time(datetime(*parts, tzinfo=dt_util.get_default_time_zone()))
 
 
+def _north_of_stop(miles: float) -> float:
+    """Latitude that many miles due north of the fixture's stop."""
+    return RIDER_INFO["stpLat"] + degrees(miles / 3958.7613)
+
+
 def _at_distance(miles: float) -> dict:
     """Return a rider payload with the bus that far from the stop.
 
@@ -1507,3 +1512,81 @@ async def test_a_noisy_estimate_does_not_republish_every_wobble(
     # A real move is still a real move.
     moved = buses._steady(at(25), now)
     assert moved.arrival == at(25).arrival
+
+
+async def test_a_run_that_has_arrived_is_dropped_on_every_basis(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_api: AsyncMock,
+    hass_storage: dict[str, Any],
+) -> None:
+    """17 Sep: fixed once, in one branch, and back through the other door.
+
+    v3.1.2 stopped a finished run being offered as the next arrival — but only
+    in the historical branch. The moment route matching became the basis the
+    fault returned: the bus reached the stop at 08:04 and the estimate went on
+    predicting the morning arrival for five more minutes, drifting later each
+    poll (08:05:15, 08:07:44, 08:09:46).
+
+    The question is asked once now, before any basis is chosen, so whichever
+    branch is added next cannot forget it.
+    """
+    mock_config_entry.add_to_hass(hass)
+    hass_storage[f"wheresthebus_arrivals.{mock_config_entry.entry_id}"] = {
+        "version": 1,
+        "data": {
+            "schema": ARRIVAL_SCHEMA,
+            "riders": {
+                "12345678": [
+                    {
+                        "run": "am",
+                        "at": datetime(
+                            2026, 9, day, 8, 1, tzinfo=dt_util.get_default_time_zone()
+                        ).isoformat(),
+                        "closest": 0.0,
+                        "legs": {"0": 600, "1": 360, "2": 240, "3": 60},
+                        # A track passing through where the bus will be at
+                        # 08:06, so the ROUTE branch answers and the guard
+                        # under test is the one that has to stop it.
+                        "track": [
+                            [600, _north_of_stop(1.0), RIDER_INFO["stpLon"]],
+                            [300, _north_of_stop(0.2), RIDER_INFO["stpLon"]],
+                            [0, RIDER_INFO["stpLat"], RIDER_INFO["stpLon"]],
+                        ],
+                        "replayed": True,
+                    }
+                    for day in (8, 9, 10, 11, 14)
+                ]
+            },
+        },
+    }
+
+    with freeze_time_local(2026, 9, 17, 8, 0):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+        buses = mock_config_entry.runtime_data.buses
+
+        # The bus reaches the stop: this run is done.
+        mock_api.async_get_rider_info.return_value = _at_distance(0.0)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    assert buses._pending[(12345678, "am", date(2026, 9, 17))][0] == pytest.approx(0.0)
+
+    # It pulls away north...
+    with freeze_time_local(2026, 9, 17, 8, 3):
+        mock_api.async_get_rider_info.return_value = _at_distance(0.5)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+
+    # ...then comes back south past the stop, travelling the same way as the
+    # stored track. That is what makes the ROUTE branch answer, so the guard
+    # under test is the one that has to stop it — not the historical one.
+    with freeze_time_local(2026, 9, 17, 8, 6):
+        mock_api.async_get_rider_info.return_value = _at_distance(0.2)
+        await buses.async_refresh()
+        await hass.async_block_till_done()
+        prediction = buses.predict_next_arrival(12345678)
+
+    assert prediction is not None
+    assert prediction.run == "pm"

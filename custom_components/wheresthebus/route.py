@@ -105,9 +105,7 @@ def heading_of(points: Sequence[tuple[float, float]]) -> float | None:
     return None
 
 
-def _sample_heading(
-    track: list[tuple[int, float, float]], index: int
-) -> float | None:
+def _sample_heading(track: list[tuple[int, float, float]], index: int) -> float | None:
     """Return which way a past journey was travelling at one of its samples."""
     return heading_of([(lat, lon) for _, lat, lon in track[: index + 1]])
 

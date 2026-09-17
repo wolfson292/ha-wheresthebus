@@ -121,6 +121,13 @@ RECEDE_HYSTERESIS: Final = 1.15
 # does not.
 ARRIVAL_HYSTERESIS_SECONDS: Final = 120
 
+# The narrowest a route-matched band may claim to be. Two past journeys that
+# happen to agree are not certainty, and on 17 Sep a two-sample match reported
+# earliest and latest as the same instant - uncertainty of zero, from a sample
+# of two. A bus is not predictable to the second and the band should never
+# imply it is.
+ROUTE_BAND_FLOOR_SECONDS: Final = 30
+
 # Answering "did the rider board" from their phone, when no scan says so.
 #
 # Both thresholds are needed and neither alone would do. A phone that has

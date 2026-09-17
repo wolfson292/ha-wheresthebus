@@ -49,6 +49,7 @@ from .const import (
     OUTLIER_FLOOR_MINUTES,
     OUTLIER_MAD_MULTIPLIER,
     RECEDE_HYSTERESIS,
+    ROUTE_BAND_FLOOR_SECONDS,
     ROUTE_MATCH_RADIUS_KM,
     ROUTE_MATCH_RADIUS_MILES,
     RUN_AM,
@@ -1842,11 +1843,25 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
                 continue
             learned, samples, spread, outliers = self._learned_time(child_id, run)
 
+            # A run that has already happened is not the next arrival, on ANY
+            # basis. This was fixed once, in the historical branch alone, and
+            # so came straight back through the other door the moment route
+            # matching became the basis: on 17 Sep the bus reached the stop at
+            # 08:04 and the estimate went on predicting the morning arrival
+            # for five more minutes, drifting later each poll - 08:05:15,
+            # 08:07:44, 08:09:46. Asked once, here, it cannot be forgotten by
+            # whichever branch is added next.
+            arrived = self._already_arrived(child_id, run, local_now.date())
+
             # Where the bus has got to along the route beats both the rung
             # ladder and the clock, because it is the only one of the three
             # that reconsiders on every position report.
             on_route = self._route_arrival(child_id, run, local_now)
-            if on_route is not None and self._watching(child_id, run, local_now):
+            if (
+                on_route is not None
+                and not arrived
+                and self._watching(child_id, run, local_now)
+            ):
                 when, seen, soonest, latest = on_route
                 candidates.append(
                     ArrivalPrediction(
@@ -1869,7 +1884,7 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             # Failing that: once inside a rung, when the bus set off no longer
             # matters. Anchor to the crossing and stop guessing.
             anchored = self._anchored_arrival(child_id, run, local_now)
-            if anchored is not None:
+            if anchored is not None and not arrived:
                 when, rung_distance, rung_samples, soonest, latest = anchored
                 candidates.append(
                     ArrivalPrediction(
@@ -2036,14 +2051,17 @@ class WheresTheBusBusCoordinator(DataUpdateCoordinator[dict[int, dict[str, Any]]
             return None
 
         usual, _ = _reject_outliers(remainders, floor=OUTLIER_FLOOR_MINUTES * 60)
-        estimate = local_now + timedelta(seconds=_median(usual))
+        middle = _median(usual)
+        # Agreement among a handful of past journeys is not certainty.
+        floor = ROUTE_BAND_FLOOR_SECONDS
+        estimate = local_now + timedelta(seconds=middle)
         if estimate <= local_now:
             return None
         return (
             estimate,
             len(remainders),
-            local_now + timedelta(seconds=usual[0]),
-            local_now + timedelta(seconds=usual[-1]),
+            local_now + timedelta(seconds=min(usual[0], middle - floor)),
+            local_now + timedelta(seconds=max(usual[-1], middle + floor)),
         )
 
     def _anchored_arrival(
